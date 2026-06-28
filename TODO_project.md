@@ -272,17 +272,17 @@ class SyncResult:
 - **DoD:** для каждой стратегии запланированные `offset` отображают rec-время в ожидаемое cam-время в пределах ≤ 1 кадра (или ≤ ~40 мс) на всей длине (проверка на синтетике).
 
 ### Phase 4: FCPXML Generator
-- [ ] `engine/export.py`: генерация через `xml.etree.ElementTree`; версия FCPXML — параметр (дефолт `1.9`), корректный `DOCTYPE`.
-- [ ] Хелпер `to_rational(seconds, timebase)`: все тайм-значения — точные рациональные строки `"N/Ds"` (видео — по сетке кадров из fps; аудио — по sample rate, напр. timebase 48000), со снапом на сетку, иначе FCP округлит/отвергнет.
-- [ ] `resources`: `format` (с `frameDuration`, напр. `1001/30000s`, шириной/высотой), `asset` для каждого видео и аудио + `media-rep kind="original-media" src="file:///…"`.
-- [ ] `library → event → project → sequence(format, tcStart, tcFormat, duration) → spine`.
-- [ ] Логика таймлайна:
+- [x] `engine/export.py`: генерация через `xml.etree.ElementTree`; версия FCPXML — параметр (дефолт `1.9`), корректный `DOCTYPE`.
+- [x] Хелпер `to_rational(seconds, timebase)`: все тайм-значения — точные рациональные строки `"N/Ds"` (видео — по сетке кадров из fps; аудио — по sample rate, напр. timebase 48000), со снапом на сетку, иначе FCP округлит/отвергнет.
+- [x] `resources`: `format` (с `frameDuration`, напр. `1001/30000s`, шириной/высотой), `asset` для каждого видео и аудио + `media-rep kind="original-media" src="file:///…"`.
+- [x] `library → event → project → sequence(format, tcStart, tcFormat, duration) → spine`.
+- [x] Логика таймлайна:
    - `spine` содержит пустой `gap` (подложку) на всю длину записи.
    - Исходные видеофайлы — в `lane="1"` с точными `offset`/`start`/`duration`.
    - Аудио диктофона (нарезанное/обработанное) — в `lane="-1"` с точными `offset`.
-- [ ] Уникальные `id` ресурсов; корректные `file://` URI.
-- [ ] Валидация: well-formed XML; при наличии — проверка по FCPXML DTD; round-trip парсинг обратно и сверка тайм-значений.
-- [ ] **[ОСТАНОВКА]** Сгенерировать `.fcpxml` из тестового `SyncPlan`; распарсить обратно; вывести сводку (число клипов, общая длительность).
+- [x] Уникальные `id` ресурсов; корректные `file://` URI.
+- [x] Валидация: well-formed XML; при наличии — проверка по FCPXML DTD; round-trip парсинг обратно и сверка тайм-значений.
+- [x] **[ОСТАНОВКА]** Сгенерировать `.fcpxml` из тестового `SyncPlan`; распарсить обратно; вывести сводку (число клипов, общая длительность).
 - **DoD:** сгенерированный `.fcpxml` импортируется в Final Cut Pro / DaVinci Resolve; видео на `lane 1`, синхронизированный звук на `lane -1`; рассинхрон в пределах допуска по всей длине.
 
 ### Phase 5: Graphical User Interface (PyQt6)

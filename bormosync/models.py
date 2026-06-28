@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass
@@ -66,7 +66,7 @@ class MediaClip:
 class SyncPlan:
     strategy_id: int
     clips: list[MediaClip]
-    audio_ops: list[dict[str, object]]
+    audio_ops: list[dict[str, Any]]
     total_duration: float
 
 
