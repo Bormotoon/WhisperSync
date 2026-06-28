@@ -42,10 +42,19 @@ def probe(path: Path) -> MediaInfo:
 
     data = json.loads(result.stdout)
 
-    duration = float(data["format"]["duration"])
-
     video_stream = next((s for s in data["streams"] if s["codec_type"] == "video"), None)
     audio_stream = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)
+
+    # Some professional containers (MXF, certain MOV) omit format.duration;
+    # fall back to the video, then audio, stream duration.
+    duration_str = data.get("format", {}).get("duration")
+    if duration_str is None and video_stream is not None:
+        duration_str = video_stream.get("duration")
+    if duration_str is None and audio_stream is not None:
+        duration_str = audio_stream.get("duration")
+    if duration_str is None:
+        raise RuntimeError(f"Could not determine duration for {path}")
+    duration = float(duration_str)
 
     fps: Fraction | None = None
     width: int | None = None
