@@ -36,36 +36,74 @@ class PipelineProgress:
 ProgressCallback = Callable[[PipelineProgress], None]
 
 
+@dataclass
+class CameraGroup:
+    name: str
+    lane: int
+    infos: list[MediaInfo]
+    clips: list[MediaClip]
+
+
+def scan_cameras(video_dir: Path, config: BormoSyncConfig) -> list[CameraGroup]:
+    """Discover cameras and probe their clips.
+
+    If ``video_dir`` contains sub-folders with video files, each sub-folder is
+    treated as a separate camera placed on its own positive lane (1, 2, 3, …).
+    Otherwise the flat folder is a single camera on lane 1. Clip offsets are
+    left at 0 — real timeline positions come later from matched timecodes.
+    """
+    exts = tuple(config.video_exts)
+
+    def videos_in(d: Path) -> list[Path]:
+        return sorted((p for p in d.iterdir() if p.suffix.lower() in exts), key=lambda p: p.name)
+
+    subdirs = sorted(
+        (d for d in video_dir.iterdir() if d.is_dir() and videos_in(d)),
+        key=lambda d: d.name,
+    )
+    sources: list[tuple[str, list[Path]]]
+    if subdirs:
+        sources = [(d.name, videos_in(d)) for d in subdirs]
+    else:
+        sources = [("camera", videos_in(video_dir))]
+
+    if not any(paths for _, paths in sources):
+        raise RuntimeError(f"No video files found in {video_dir}")
+
+    cameras: list[CameraGroup] = []
+    for cam_index, (name, paths) in enumerate(sources):
+        infos: list[MediaInfo] = []
+        clips: list[MediaClip] = []
+        lane = cam_index + 1
+        for path in paths:
+            info = probe(path)
+            infos.append(info)
+            clips.append(
+                MediaClip(
+                    path=path,
+                    kind="video",
+                    offset=0.0,
+                    in_point=0.0,
+                    duration=info.duration,
+                    lane=lane,
+                )
+            )
+        cameras.append(CameraGroup(name=name, lane=lane, infos=infos, clips=clips))
+
+    return cameras
+
+
 def scan_video_clips(
     video_dir: Path, config: BormoSyncConfig
 ) -> tuple[list[MediaInfo], list[MediaClip]]:
-    """Probe every video in the folder (sorted by name). Offsets are left at 0
-    here — real timeline positions are computed later from matched timecodes."""
-    exts = tuple(config.video_exts)
-    video_paths = sorted(
-        (p for p in video_dir.iterdir() if p.suffix.lower() in exts),
-        key=lambda p: p.name,
-    )
-    if not video_paths:
-        raise RuntimeError(f"No video files found in {video_dir}")
-
-    video_infos: list[MediaInfo] = []
-    video_clips: list[MediaClip] = []
-    for path in video_paths:
-        info = probe(path)
-        video_infos.append(info)
-        video_clips.append(
-            MediaClip(
-                path=path,
-                kind="video",
-                offset=0.0,
-                in_point=0.0,
-                duration=info.duration,
-                lane=1,
-            )
-        )
-
-    return video_infos, video_clips
+    """Flat view over all cameras (used by the dry-run path)."""
+    cameras = scan_cameras(video_dir, config)
+    infos: list[MediaInfo] = []
+    clips: list[MediaClip] = []
+    for cam in cameras:
+        infos.extend(cam.infos)
+        clips.extend(cam.clips)
+    return infos, clips
 
 
 def compute_master_offsets(
@@ -123,10 +161,23 @@ def run_pipeline(
     warnings: list[str] = []
 
     try:
-        # --- scanning ---
+        # --- scanning (group clips by camera) ---
         _notify("scanning", 0.0, "Scanning video directory...")
-        video_infos, video_clips = scan_video_clips(video_dir, config)
-        _notify("scanning", 1.0, f"Found {len(video_clips)} video clip(s)")
+        cameras = scan_cameras(video_dir, config)
+        video_clips: list[MediaClip] = []
+        video_infos: list[MediaInfo] = []
+        clip_camera: list[int] = []  # camera index per clip
+        for ci, cam in enumerate(cameras):
+            video_infos.extend(cam.infos)
+            for clip in cam.clips:
+                video_clips.append(clip)
+                clip_camera.append(ci)
+        cam_names = ", ".join(c.name for c in cameras)
+        _notify(
+            "scanning",
+            1.0,
+            f"Found {len(video_clips)} clip(s) across {len(cameras)} camera(s): {cam_names}",
+        )
 
         # --- transcribe recorder once ---
         engine = WhisperEngine(config)
@@ -168,13 +219,28 @@ def run_pipeline(
         for i in unaligned:
             warnings.append(f"{video_clips[i].path.name}: placed by order (no anchors)")
 
-        # --- plan audio per clip with the chosen strategy ---
+        # --- choose which camera the synced audio is derived from ---
+        anchors_per_cam: dict[int, int] = {}
+        for ci, am in zip(clip_camera, alignments, strict=True):
+            if am is not None:
+                anchors_per_cam[ci] = anchors_per_cam.get(ci, 0) + len(am.anchors)
+        if config.audio_source_camera:
+            audio_ci = next(
+                (i for i, c in enumerate(cameras) if c.name == config.audio_source_camera),
+                max(anchors_per_cam, key=lambda i: anchors_per_cam[i]),
+            )
+        else:
+            audio_ci = max(anchors_per_cam, key=lambda i: anchors_per_cam[i])
+        if len(cameras) > 1:
+            warnings.append(f"Audio synced from camera '{cameras[audio_ci].name}'")
+
+        # --- plan audio only from the audio-source camera ---
         _notify("planning", 0.0, "Planning sync strategy...")
         strategy = get_strategy(strategy_id)
         audio_clips: list[MediaClip] = []
         audio_ops: list[dict[str, object]] = []
-        for clip, am in zip(video_clips, alignments, strict=True):
-            if am is None:
+        for clip, am, ci in zip(video_clips, alignments, clip_camera, strict=True):
+            if am is None or ci != audio_ci:
                 continue
             cs, ops = strategy.plan_clip(
                 am, audio_file, clip.offset, clip.duration, rec_info.duration, config

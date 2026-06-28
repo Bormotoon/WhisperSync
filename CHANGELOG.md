@@ -5,6 +5,11 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Multi-camera support:** put each camera's clips in its own sub-folder of the
+  video directory; each camera is placed on its own lane (1, 2, 3, …) and aligned
+  to the recorder independently. The clean audio is synced once from a chosen
+  reference camera (`audio_source_camera` / `--audio-source-camera`, default
+  auto-picks the best-aligned camera) so it isn't duplicated across angles.
 - **Windowed matching for long recordings:** each clip is first coarsely located
   in the (possibly multi-hour) reference by rare-word delta voting, then matched
   precisely only inside a window around that estimate. This avoids O(N²) difflib

@@ -78,6 +78,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Audio sample-rate reference for FCPXML time values (default: camera)",
     )
     parser.add_argument(
+        "--audio-source-camera",
+        default=None,
+        help="Multicam: camera sub-folder name to sync audio from (default: auto)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("output/sync_output.fcpxml"),
@@ -220,6 +225,8 @@ def main() -> None:
         overrides["fcpxml_version"] = args.fcpxml_version
     if args.timebase_source:
         overrides["timebase_source"] = args.timebase_source
+    if args.audio_source_camera:
+        overrides["audio_source_camera"] = args.audio_source_camera
 
     if args.no_cache:
         overrides["use_cache"] = False

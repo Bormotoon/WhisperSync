@@ -49,6 +49,9 @@ class BormoSyncConfig:
     output_dir: str | None = None
     use_cache: bool = True
     timebase_source: str = "camera"
+    # Multicam: name (subfolder) of the camera the synced audio is derived from.
+    # None = auto-pick the camera with the strongest alignment.
+    audio_source_camera: str | None = None
     min_anchors: int = MIN_ANCHORS
     anchor_min_confidence: float = ANCHOR_MIN_CONFIDENCE
     phrase_gap_threshold: float = PHRASE_GAP_THRESHOLD

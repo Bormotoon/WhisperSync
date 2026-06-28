@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from bormosync.engine.pipeline import compute_master_offsets
+from pathlib import Path
+
+import pytest
+
+from bormosync.config import BormoSyncConfig
+from bormosync.engine.pipeline import compute_master_offsets, scan_cameras
 from bormosync.models import AlignmentMap
 
 
@@ -39,3 +44,57 @@ def test_unaligned_clip_falls_back_to_previous_end() -> None:
     assert offsets[0] == 0.0
     assert offsets[1] == 10.0  # placed right after clip0
     assert unaligned == [1]
+
+
+def _fake_probe(path: Path):  # noqa: ANN202
+    from fractions import Fraction
+
+    from bormosync.engine.media import MediaInfo
+
+    return MediaInfo(
+        path=path,
+        duration=10.0,
+        fps=Fraction(25, 1),
+        width=1920,
+        height=1080,
+        video_codec="h264",
+        audio_codec="aac",
+        audio_channels=2,
+        audio_sample_rate=48000,
+    )
+
+
+def test_scan_cameras_flat_dir_is_single_camera(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr("bormosync.engine.pipeline.probe", _fake_probe)
+    (tmp_path / "a.mp4").touch()
+    (tmp_path / "b.mp4").touch()
+
+    cams = scan_cameras(tmp_path, BormoSyncConfig())
+    assert len(cams) == 1
+    assert cams[0].lane == 1
+    assert len(cams[0].clips) == 2
+    assert all(c.lane == 1 for c in cams[0].clips)
+
+
+def test_scan_cameras_subfolders_become_separate_lanes(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    monkeypatch.setattr("bormosync.engine.pipeline.probe", _fake_probe)
+    (tmp_path / "camA").mkdir()
+    (tmp_path / "camB").mkdir()
+    (tmp_path / "camA" / "a1.mp4").touch()
+    (tmp_path / "camA" / "a2.mp4").touch()
+    (tmp_path / "camB" / "b1.mp4").touch()
+
+    cams = scan_cameras(tmp_path, BormoSyncConfig())
+    assert [c.name for c in cams] == ["camA", "camB"]
+    assert cams[0].lane == 1 and cams[1].lane == 2
+    assert len(cams[0].clips) == 2 and len(cams[1].clips) == 1
+    assert all(c.lane == 1 for c in cams[0].clips)
+    assert all(c.lane == 2 for c in cams[1].clips)
+
+
+def test_scan_cameras_empty_dir_raises(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr("bormosync.engine.pipeline.probe", _fake_probe)
+    with pytest.raises(RuntimeError):
+        scan_cameras(tmp_path, BormoSyncConfig())
