@@ -1,1 +1,153 @@
 /* BormoSync Dark Theme */
+
+QMainWindow,
+QWidget {
+    background-color: #0A0A0A;
+    color: #EEEEEE;
+}
+
+QPushButton {
+    background-color: #D32F2F;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+}
+
+QPushButton:hover {
+    background-color: #E53935;
+}
+
+QPushButton:pressed {
+    background-color: #B71C1C;
+}
+
+QPushButton:disabled {
+    background-color: #555555;
+    color: #888888;
+}
+
+QRadioButton {
+    color: #EEEEEE;
+}
+
+QRadioButton::indicator {
+    border: 2px solid #FF5722;
+    border-radius: 7px;
+    width: 14px;
+    height: 14px;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #FF5722;
+}
+
+QProgressBar {
+    background-color: #1A1A1A;
+    border: none;
+    border-radius: 4px;
+    text-align: center;
+    color: #EEEEEE;
+}
+
+QProgressBar::chunk {
+    background-color: #D32F2F;
+    border-radius: 4px;
+}
+
+QTextEdit {
+    background-color: #0A0A0A;
+    border: 1px solid #333333;
+    color: #EEEEEE;
+    font-family: monospace;
+}
+
+QSplitter {
+    background-color: #0A0A0A;
+}
+
+QSplitter::handle {
+    background-color: #333333;
+}
+
+QLabel {
+    color: #EEEEEE;
+}
+
+QFrame {
+    background-color: #141414;
+    border-radius: 6px;
+}
+
+QGroupBox {
+    border: 1px solid #333333;
+    border-radius: 4px;
+    margin-top: 8px;
+    padding-top: 16px;
+    color: #FF5722;
+    font-weight: bold;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+}
+
+QScrollBar:vertical {
+    background-color: #141414;
+    width: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #333333;
+    border-radius: 5px;
+    min-height: 30px;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background-color: #141414;
+    height: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #333333;
+    border-radius: 5px;
+    min-width: 30px;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+QStatusBar {
+    background-color: #141414;
+    color: #888888;
+}
+
+QMenuBar {
+    background-color: #141414;
+    color: #EEEEEE;
+}
+
+QMenuBar::item:selected {
+    background-color: #D32F2F;
+}
+
+QMenu {
+    background-color: #141414;
+    color: #EEEEEE;
+    border: 1px solid #333333;
+}
+
+QMenu::item:selected {
+    background-color: #D32F2F;
+}

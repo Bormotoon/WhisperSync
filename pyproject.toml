@@ -16,6 +16,9 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+"bormosync/gui/**" = ["N802"]
+
 [tool.ruff.format]
 quote-style = "double"
 
@@ -29,6 +32,11 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "bormosync.gui.*"
+disallow_untyped_defs = false
+disable_error_code = ["override", "union-attr"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
