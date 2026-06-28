@@ -304,11 +304,11 @@ class SyncResult:
 - **DoD:** перетащил папку видео + файл диктофона → выбрал стратегию (диаграмма обновилась) → запустил → UI не виснет, прогресс идёт, на выходе валидный `.fcpxml`; отмена работает.
 
 ### Phase 6: CLI & Packaging
-- [ ] `bormosync/cli.py` + `main.py`: по умолчанию запуск GUI; при `--cli` — headless. Аргументы: `--cli`, `--video-dir`, `--audio-file`, `--strategy {1,2,3}`, `--output`, `--model`, `--device`, `--compute-type`, `--language`, `--fcpxml-version`, `--config`, `--cache/--no-cache`, `--dry-run`, `--json` (машинный отчёт), `--verbose`.
-- [ ] Headless-прогресс в stdout (`rich`/`tqdm`), осмысленные коды возврата; пример вызова в `--help` и README.
-- [ ] Поддержка конфиг-файла (`--config`), слияние с дефолтами; CLI перекрывает файл.
-- [ ] `bormosync.spec` для `PyInstaller`: hidden imports (`ctranslate2`, `faster_whisper`, `av`, `tokenizers`); сбор data-файлов `faster_whisper`; учёт CUDA-библиотек (cuBLAS/cuDNN) — для CUDA рекомендовать `--onedir`; локация/бандл `ffmpeg`; модель грузится в кэш при первом запуске.
-- [ ] **[ОСТАНОВКА]** Прогнать полный сценарий из CLI на мини-наборе; приложить команду и вывод.
+- [x] `bormosync/cli.py` + `main.py`: по умолчанию запуск GUI; при `--cli` — headless. Аргументы: `--cli`, `--video-dir`, `--audio-file`, `--strategy {1,2,3}`, `--output`, `--model`, `--device`, `--compute-type`, `--language`, `--fcpxml-version`, `--config`, `--cache/--no-cache`, `--dry-run`, `--json` (машинный отчёт), `--verbose`.
+- [x] Headless-прогресс в stdout (`rich`/`tqdm`), осмысленные коды возврата; пример вызова в `--help` и README.
+- [x] Поддержка конфиг-файла (`--config`), слияние с дефолтами; CLI перекрывает файл.
+- [x] `bormosync.spec` для `PyInstaller`: hidden imports (`ctranslate2`, `faster_whisper`, `av`, `tokenizers`); сбор data-файлов `faster_whisper`; учёт CUDA-библиотек (cuBLAS/cuDNN) — для CUDA рекомендовать `--onedir`; локация/бандл `ffmpeg`; модель грузится в кэш при первом запуске.
+- [x] **[ОСТАНОВКА]** Прогнать полный сценарий из CLI на мини-наборе; приложить команду и вывод.
 - **DoD:** `python main.py --cli --video-dir … --audio-file … --strategy 1 --output out.fcpxml` отрабатывает end-to-end; `.spec` собирается (хотя бы `--onedir`).
 
 ### Phase 7: Testing & QA
