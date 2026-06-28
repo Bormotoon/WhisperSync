@@ -1,0 +1,35 @@
+[project]
+name = "bormosync"
+version = "0.1.0"
+description = "Advanced Audio/Video Synchronization Tool"
+requires-python = ">=3.10"
+license = "MIT"
+
+[project.scripts]
+bormosync = "bormosync.cli:main"
+bormosync-gui = "main:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

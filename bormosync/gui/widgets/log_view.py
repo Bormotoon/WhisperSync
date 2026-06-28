@@ -1,0 +1,1 @@
+"""Colored log viewer widget."""
