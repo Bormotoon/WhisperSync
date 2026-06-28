@@ -5,7 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from bormosync.config import BormoSyncConfig
-from bormosync.engine.matcher import align, find_anchors, normalize_token
+from bormosync.engine.matcher import (
+    align,
+    estimate_coarse_delta,
+    find_anchors,
+    normalize_token,
+    normalize_words,
+)
 from bormosync.models import Segment, Transcript, Word
 
 
@@ -100,3 +106,71 @@ def test_align_known_offset_and_k() -> None:
     assert abs(result.k - true_k) < 0.001
     assert len(result.anchors) >= 10
     assert result.residual_ms < 50.0
+
+
+# vocabulary big enough to fill a long recorder without trivial repetition
+_VOCAB = [f"word{i:04d}" for i in range(4000)]
+
+
+def _long_recorder_with_clip(
+    clip_tokens: list[str],
+    clip_offset_in_rec: float,
+    total_rec_minutes: float,
+    true_k: float,
+) -> tuple[Transcript, Transcript]:
+    """Build a multi-minute recorder whose content at ``clip_offset_in_rec``
+    matches a clip whose LOCAL time starts at 0. A few clip words are also
+    sprinkled in a far region as distractors. The true mapping is
+    cam_local = true_k * (t_rec - clip_offset_in_rec), i.e. offset = -true_k * clip_offset.
+    """
+    rec: list[tuple[str, float, float]] = []
+    total_sec = total_rec_minutes * 60
+    t = 0.0
+    vi = 0
+    while t < total_sec:
+        rec.append((_VOCAB[vi % len(_VOCAB)], t, t + 0.4))
+        vi += 1
+        t += 0.5
+
+    cam: list[tuple[str, float, float]] = []
+    for j, tok in enumerate(clip_tokens):
+        r = clip_offset_in_rec + j * 0.5
+        rec.append((tok, r, r + 0.4))
+        c = true_k * (r - clip_offset_in_rec)  # local clip time, starts at 0
+        cam.append((tok, c, c + 0.4))
+
+    # a few distractor copies elsewhere (fewer than the true run, so it loses)
+    for j, tok in enumerate(clip_tokens[:5]):
+        r = total_sec * 0.8 + j * 0.5
+        rec.append((tok, r, r + 0.4))
+
+    rec.sort(key=lambda x: x[1])
+    return _make_transcript(cam, "cam.wav"), _make_transcript(rec, "rec.wav")
+
+
+def test_estimate_coarse_delta_finds_region_despite_distractors() -> None:
+    clip_tokens = [f"anchorword{i:03d}" for i in range(15)]
+    cam_t, rec_t = _long_recorder_with_clip(
+        clip_tokens, clip_offset_in_rec=1800.0, total_rec_minutes=60.0, true_k=1.0
+    )
+    cfg = BormoSyncConfig(anchor_min_confidence=0.5)
+    cam_w = normalize_words(list(cam_t.words), 0.5)
+    rec_w = normalize_words(list(rec_t.words), 0.5)
+    delta = estimate_coarse_delta(cam_w, rec_w, cfg)
+    assert delta is not None
+    # clip local starts at 0, content sits at recorder t≈1800 -> delta ≈ 1800
+    assert abs(delta - 1800.0) < 5.0
+
+
+def test_align_windowed_on_long_recorder() -> None:
+    clip_tokens = [f"anchorword{i:03d}" for i in range(20)]
+    clip_offset, true_k = 2400.0, 1.0008
+    cam_t, rec_t = _long_recorder_with_clip(
+        clip_tokens, clip_offset_in_rec=clip_offset, total_rec_minutes=80.0, true_k=true_k
+    )
+    cfg = BormoSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
+    result = align(cam_t, rec_t, cfg)
+    assert abs(result.k - true_k) < 0.002
+    # the clip's local 0 must map back to recorder t≈2400
+    assert abs(result.rec_to_cam(clip_offset)) < 0.5
+    assert len(result.anchors) >= 10

@@ -6,7 +6,7 @@ import difflib
 import logging
 import random
 import string
-from collections import Counter
+from collections import Counter, defaultdict
 
 import numpy as np
 
@@ -33,17 +33,56 @@ def normalize_words(words: list[Word], min_confidence: float) -> list[Word]:
     return result
 
 
-def find_anchors(
-    cam_transcript: Transcript,
-    rec_transcript: Transcript,
-    min_confidence: float = 0.6,
-) -> list[Anchor]:
-    cam_words = normalize_words(list(cam_transcript.words), min_confidence)
-    rec_words = normalize_words(list(rec_transcript.words), min_confidence)
+def _mid(w: Word) -> float:
+    return (w.start + w.end) / 2
 
-    if not cam_words or not rec_words:
-        return []
 
+def estimate_coarse_delta(
+    cam_words: list[Word], rec_words: list[Word], config: BormoSyncConfig
+) -> float | None:
+    """Roughly locate the clip inside a (possibly very long) reference by voting
+    on the time delta ``rec_time - cam_time`` of shared rare words. Returns the
+    estimated delta (recorder time of the clip's start ≈ cam time + delta), or
+    None if there is no confident peak.
+
+    Assumes K ≈ 1 for the coarse pass, which is accurate enough over a single
+    clip to pick the right window; the fine pass recovers the exact K.
+    """
+    rec_count = Counter(w.norm for w in rec_words)
+    rec_positions: dict[str, list[float]] = defaultdict(list)
+    for w in rec_words:
+        if rec_count[w.norm] <= config.seed_max_occurrences:
+            rec_positions[w.norm].append(_mid(w))
+
+    bin_width = config.seed_bin_width
+    votes: Counter[int] = Counter()
+    delta_sum: dict[int, float] = defaultdict(float)
+    for cw in cam_words:
+        ct = _mid(cw)
+        for rt in rec_positions.get(cw.norm, ()):
+            d = rt - ct
+            b = round(d / bin_width)
+            votes[b] += 1
+            delta_sum[b] += d
+
+    if not votes:
+        return None
+
+    best_bin, best_votes = votes.most_common(1)[0]
+    if best_votes < max(3, config.min_anchors // 2):
+        return None
+
+    # weighted mean over the winning bin and its immediate neighbours
+    total_n = 0
+    total_d = 0.0
+    for b in (best_bin - 1, best_bin, best_bin + 1):
+        if b in votes:
+            total_n += votes[b]
+            total_d += delta_sum[b]
+    return total_d / total_n
+
+
+def _anchors_from_words(cam_words: list[Word], rec_words: list[Word]) -> list[Anchor]:
     cam_norms = [w.norm for w in cam_words]
     rec_norms = [w.norm for w in rec_words]
 
@@ -95,6 +134,18 @@ def find_anchors(
     return monotonic
 
 
+def find_anchors(
+    cam_transcript: Transcript,
+    rec_transcript: Transcript,
+    min_confidence: float = 0.6,
+) -> list[Anchor]:
+    cam_words = normalize_words(list(cam_transcript.words), min_confidence)
+    rec_words = normalize_words(list(rec_transcript.words), min_confidence)
+    if not cam_words or not rec_words:
+        return []
+    return _anchors_from_words(cam_words, rec_words)
+
+
 def ransac_linear_fit(
     anchors: list[Anchor],
     n_iterations: int = 200,
@@ -133,12 +184,57 @@ def ransac_linear_fit(
     return offset_final, k_final, best_inliers
 
 
+def _window_recorder(
+    cam_words: list[Word], rec_words: list[Word], config: BormoSyncConfig
+) -> list[Word]:
+    """If the recorder is much longer than the clip, restrict matching to a
+    window around the coarse estimate; otherwise return all recorder words."""
+    rec_span = _mid(rec_words[-1]) - _mid(rec_words[0])
+    cam_lo = min(w.start for w in cam_words)
+    cam_hi = max(w.end for w in cam_words)
+    margin = config.match_window_margin
+
+    # Only worth windowing when the reference dwarfs the needed window.
+    if rec_span <= (cam_hi - cam_lo) + 4 * margin:
+        return rec_words
+
+    delta = estimate_coarse_delta(cam_words, rec_words, config)
+    if delta is None:
+        return rec_words
+
+    lo = cam_lo + delta - margin
+    hi = cam_hi + delta + margin
+    windowed = [w for w in rec_words if lo <= _mid(w) <= hi]
+    if len(windowed) < 2:
+        return rec_words
+    logger.info(
+        "Windowed match: delta=%.1fs window=[%.0f,%.0f]s, %d -> %d recorder words",
+        delta,
+        lo,
+        hi,
+        len(rec_words),
+        len(windowed),
+    )
+    return windowed
+
+
 def align(
     cam_transcript: Transcript,
     rec_transcript: Transcript,
     config: BormoSyncConfig,
 ) -> AlignmentMap:
-    anchors = find_anchors(cam_transcript, rec_transcript, config.anchor_min_confidence)
+    cam_words = normalize_words(list(cam_transcript.words), config.anchor_min_confidence)
+    rec_words = normalize_words(list(rec_transcript.words), config.anchor_min_confidence)
+    if not cam_words or not rec_words:
+        raise ValueError("No usable words to align (check confidence threshold / speech content).")
+
+    rec_used = _window_recorder(cam_words, rec_words, config)
+    anchors = _anchors_from_words(cam_words, rec_used)
+
+    # If the coarse window was misleading, retry once against the full reference.
+    if len(anchors) < config.min_anchors and rec_used is not rec_words:
+        logger.info("Windowed match weak (%d anchors); retrying full reference", len(anchors))
+        anchors = _anchors_from_words(cam_words, rec_words)
 
     if len(anchors) < 2:
         raise ValueError(

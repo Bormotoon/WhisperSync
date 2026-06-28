@@ -5,6 +5,12 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Windowed matching for long recordings:** each clip is first coarsely located
+  in the (possibly multi-hour) reference by rare-word delta voting, then matched
+  precisely only inside a window around that estimate. This avoids O(N²) difflib
+  over the full stream and the false matches caused by phrases repeating across
+  hours. Falls back to a full search if the window looks weak. Tunable via
+  `match_window_margin`, `seed_max_occurrences`, `seed_bin_width`.
 - **Strategy 4 — Hybrid (Global + Silence):** each phrase is tempo-corrected by
   the clip's global drift K and then placed at its anchor position with silence
   absorbing the rest. Robust against non-linear drift and near pitch-perfect.

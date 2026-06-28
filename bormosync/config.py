@@ -20,6 +20,13 @@ ANCHOR_MIN_CONFIDENCE = 0.6
 # in the silence-padding / hybrid strategies.
 PHRASE_GAP_THRESHOLD = 0.6
 
+# Coarse-then-fine matching for long recordings: a clip is first roughly located
+# in the (possibly multi-hour) reference by rare-word voting, then matched
+# precisely only inside a window around that estimate.
+MATCH_WINDOW_MARGIN = 90.0  # seconds of slack added around the coarse estimate
+SEED_MAX_OCCURRENCES = 50  # ignore tokens appearing more than this in the reference
+SEED_BIN_WIDTH = 2.0  # seconds — histogram bin width for the coarse-offset vote
+
 WHISPER_BEAM_SIZE = 5
 WHISPER_TEMPERATURE = 0.0
 
@@ -45,6 +52,9 @@ class BormoSyncConfig:
     min_anchors: int = MIN_ANCHORS
     anchor_min_confidence: float = ANCHOR_MIN_CONFIDENCE
     phrase_gap_threshold: float = PHRASE_GAP_THRESHOLD
+    match_window_margin: float = MATCH_WINDOW_MARGIN
+    seed_max_occurrences: int = SEED_MAX_OCCURRENCES
+    seed_bin_width: float = SEED_BIN_WIDTH
 
     @property
     def resolved_cache_dir(self) -> Path:
