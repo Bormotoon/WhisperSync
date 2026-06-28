@@ -104,7 +104,6 @@ def _run_dry_run(
     progress_callback: Any = None,
 ) -> Any:
     import os
-    import os
     from contextlib import suppress
 
     from bormosync.engine.matcher import align as match_align
