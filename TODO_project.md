@@ -312,12 +312,12 @@ class SyncResult:
 - **DoD:** `python main.py --cli --video-dir … --audio-file … --strategy 1 --output out.fcpxml` отрабатывает end-to-end; `.spec` собирается (хотя бы `--onedir`).
 
 ### Phase 7: Testing & QA
-- [ ] Юнит-тесты на синтетике:
+- [x] Юнит-тесты на синтетике:
    - `test_matcher.py`: два списка слов с известными `offset`/`K`/шумом → проверка восстановления и числа якорей.
    - `test_strategies.py`: для каждой стратегии — `offset` клипов отображают rec→cam в пределах допуска.
    - `test_timestretch.py`: разложение `atempo` (произведение факторов ≈ цель, каждый в `[0.5, 2.0]`).
    - `test_export.py`: генерация → парсинг обратно → сверка структуры/времён; (opt) валидация по DTD; golden-file.
-- [ ] Интеграционный тест: мини-медиа на несколько секунд (генерировать `ffmpeg`-ом синус + TTS или хранить фикстуры) → end-to-end → валидный `.fcpxml`.
+- [x] Интеграционный тест: мини-медиа на несколько секунд (генерировать `ffmpeg`-ом синус + TTS или хранить фикстуры) → end-to-end → валидный `.fcpxml`.
 - [ ] (opt) CI (GitHub Actions): без GPU — быстрые CPU/мок-тесты Whisper; `ruff`/`black`/`mypy` как гейты.
 - [ ] Ручная приёмка: импорт `.fcpxml` в FCP/DaVinci Resolve, проверка синхрона на слух/по волновой форме.
 - **DoD:** `pytest` зелёный; покрыты matcher, стратегии, timestretch, export.
