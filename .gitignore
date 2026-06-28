@@ -15,3 +15,7 @@ report.json
 .vscode/
 .idea/
 .DS_Store
+
+# Reference material (Gemini conversation export)
+*.html
+*_files/

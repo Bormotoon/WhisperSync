@@ -1,316 +1,305 @@
-"""Synchronization strategies: Global Linear, Local Time-Stretch, Silence Padding."""
+"""Synchronization strategies (per camera clip).
+
+Each strategy plans the synced recorder audio for ONE camera clip, given a
+linear alignment between that clip's local time and the recorder time:
+
+    t_local = alignment.offset + alignment.k * t_rec
+
+so the recorder time for a local clip position is ``(t_local - offset) / k``.
+
+The pipeline calls ``plan_clip`` once per clip and assembles the full timeline,
+which means clip placement comes purely from matched timecodes — no assumption
+that clips are contiguous.
+"""
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
 
-from bormosync.models import AlignmentMap, MediaClip, SyncPlan
+from bormosync.config import BormoSyncConfig
+from bormosync.models import AlignmentMap, Anchor, MediaClip
 
 logger = logging.getLogger(__name__)
 
+AudioOp = dict[str, object]
+ClipPlan = tuple[list[MediaClip], list[AudioOp]]
 
-def _timeline_end(clips: list[MediaClip]) -> float:
-    """Return the latest timeline position reached by any clip."""
-    return max((c.offset + c.duration for c in clips), default=0.0)
+# Minimum length of a speech block, so an isolated anchor still yields audible
+# audio instead of a zero-length segment that gets dropped.
+_MIN_BLOCK_DUR = 0.2
+
+
+def _rec_to_local(am: AlignmentMap, t_rec: float) -> float:
+    return am.offset + am.k * t_rec
+
+
+def _local_to_rec(am: AlignmentMap, t_local: float) -> float:
+    return (t_local - am.offset) / am.k
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _speech_blocks(anchors: list[Anchor], gap: float) -> list[tuple[float, float]]:
+    """Group anchors (sorted by rec_time) into [rec_start, rec_end] speech
+    blocks, splitting wherever the recorder-time gap exceeds ``gap`` seconds."""
+    if not anchors:
+        return []
+    blocks: list[tuple[float, float]] = []
+    start = anchors[0].rec_time
+    end = anchors[0].rec_time
+    for a in anchors[1:]:
+        if a.rec_time - end > gap:
+            blocks.append((start, end))
+            start = a.rec_time
+        end = a.rec_time
+    blocks.append((start, end))
+    return blocks
 
 
 class SyncStrategy(ABC):
-    """Abstract base class for synchronization strategies."""
+    """Base class. Subclasses set strategy_id/name/description and implement
+    plan_clip for a single camera clip."""
+
+    strategy_id: int
+    name: str
+    description: str
 
     @abstractmethod
-    def plan(
+    def plan_clip(
         self,
         alignment: AlignmentMap,
         rec_audio_path: Path,
+        clip_offset: float,
+        clip_duration: float,
         rec_duration: float,
-        video_clips: list[MediaClip],
-    ) -> SyncPlan: ...
-
-    @property
-    @abstractmethod
-    def strategy_id(self) -> int: ...
-
-    @property
-    @abstractmethod
-    def name(self) -> str: ...
-
-    @property
-    @abstractmethod
-    def description(self) -> str: ...
-
-    @property
-    @abstractmethod
-    def diagram_data(self) -> dict[str, Any]: ...
+        config: BormoSyncConfig,
+    ) -> ClipPlan: ...
 
 
 class GlobalLinearStrategy(SyncStrategy):
-    """Apply a single global atempo = 1/K to the entire recording."""
-
     strategy_id = 1
     name = "Global Linear"
-    description = "Apply a single global tempo change to the entire audio recording."
+    description = "One tempo change for the whole clip. Best for linear clock drift."
 
-    def __init__(self) -> None:
-        self._diagram_data: dict[str, Any] = {}
-
-    def plan(
+    def plan_clip(
         self,
         alignment: AlignmentMap,
         rec_audio_path: Path,
+        clip_offset: float,
+        clip_duration: float,
         rec_duration: float,
-        video_clips: list[MediaClip],
-    ) -> SyncPlan:
-        k = alignment.k
-        factor = 1.0 / k
-        cam_duration = rec_duration * k
+        config: BormoSyncConfig,
+    ) -> ClipPlan:
+        r0 = _clamp(_local_to_rec(alignment, 0.0), 0.0, rec_duration)
+        r1 = _clamp(_local_to_rec(alignment, clip_duration), 0.0, rec_duration)
+        in_dur = r1 - r0
+        if in_dur <= 0:
+            return [], []
+
+        # local span actually covered by available recorder audio
+        local_start = _rec_to_local(alignment, r0)
+        out_dur = _rec_to_local(alignment, r1) - local_start
+        factor = in_dur / out_dur if out_dur > 0 else 1.0
 
         clip = MediaClip(
             path=rec_audio_path,
             kind="audio",
-            offset=alignment.offset,
+            offset=clip_offset + local_start,
             in_point=0.0,
-            duration=cam_duration,
+            duration=out_dur,
             lane=-1,
         )
-
-        audio_ops: list[dict[str, Any]] = [
-            {"type": "atempo", "factor": factor, "input": str(rec_audio_path)},
-        ]
-
-        self._diagram_data = {
-            "type": "global",
-            "blocks": [{"start": 0.0, "end": 1.0, "label": f"atempo={factor:.4f}"}],
+        op: AudioOp = {
+            "type": "atempo_segment",
+            "input": str(rec_audio_path),
+            "start": r0,
+            "duration": in_dur,
+            "factor": factor,
         }
-
-        clips = list(video_clips) + [clip]
-        return SyncPlan(
-            strategy_id=self.strategy_id,
-            clips=clips,
-            audio_ops=audio_ops,
-            total_duration=_timeline_end(clips),
-        )
-
-    @property
-    def diagram_data(self) -> dict[str, Any]:
-        return self._diagram_data
+        return [clip], [op]
 
 
 class LocalTimeStretchStrategy(SyncStrategy):
-    """Divide recording into chunks between consecutive anchors with per-segment atempo."""
-
     strategy_id = 2
     name = "Local Time-Stretch"
-    description = (
-        "Divide the recording into segments between anchors " "and apply per-segment tempo change."
-    )
+    description = "Per-segment tempo change between anchors. Handles non-linear drift."
 
-    def __init__(self) -> None:
-        self._diagram_data: dict[str, Any] = {}
-
-    def plan(
+    def plan_clip(
         self,
         alignment: AlignmentMap,
         rec_audio_path: Path,
+        clip_offset: float,
+        clip_duration: float,
         rec_duration: float,
-        video_clips: list[MediaClip],
-    ) -> SyncPlan:
+        config: BormoSyncConfig,
+    ) -> ClipPlan:
         anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
+        if len(anchors) < 2:
+            return GlobalLinearStrategy().plan_clip(
+                alignment, rec_audio_path, clip_offset, clip_duration, rec_duration, config
+            )
 
-        if not anchors:
-            logger.warning("No anchors — falling back to global strategy")
-            return GlobalLinearStrategy().plan(alignment, rec_audio_path, rec_duration, video_clips)
+        # boundaries in recorder time: clip start, each anchor, clip end
+        r_start = _clamp(_local_to_rec(alignment, 0.0), 0.0, rec_duration)
+        r_end = _clamp(_local_to_rec(alignment, clip_duration), 0.0, rec_duration)
+        rec_points = [r_start] + [a.rec_time for a in anchors] + [r_end]
+        rec_points = sorted({_clamp(r, 0.0, rec_duration) for r in rec_points})
 
-        boundaries: list[tuple[float, float]] = [(0.0, alignment.offset)]
-        for a in anchors:
-            boundaries.append((a.rec_time, a.cam_time))
-        boundaries.append((rec_duration, alignment.rec_to_cam(rec_duration)))
-
-        audio_span = boundaries[-1][1] - boundaries[0][1]
-
-        clips: list[MediaClip] = list(video_clips)
-        audio_ops: list[dict[str, Any]] = []
-        blocks: list[dict[str, Any]] = []
-
-        for i in range(len(boundaries) - 1):
-            rec_start, cam_start = boundaries[i]
-            rec_end, cam_end = boundaries[i + 1]
-            rec_chunk_dur = rec_end - rec_start
-            if rec_chunk_dur <= 0:
+        clips: list[MediaClip] = []
+        ops: list[AudioOp] = []
+        for i in range(len(rec_points) - 1):
+            rs, re = rec_points[i], rec_points[i + 1]
+            in_dur = re - rs
+            if in_dur <= 1e-4:
                 continue
-
-            cam_chunk_dur = cam_end - cam_start
-            k_local = cam_chunk_dur / rec_chunk_dur
-            factor = 1.0 / k_local
-
+            ls = _rec_to_local(alignment, rs)
+            le = _rec_to_local(alignment, re)
+            out_dur = le - ls
+            if out_dur <= 0:
+                continue
+            factor = in_dur / out_dur
             clips.append(
                 MediaClip(
                     path=rec_audio_path,
                     kind="audio",
-                    offset=cam_start,
-                    in_point=rec_start,
-                    duration=cam_chunk_dur,
+                    offset=clip_offset + ls,
+                    in_point=0.0,
+                    duration=out_dur,
                     lane=-1,
                 )
             )
-
-            audio_ops.append(
+            ops.append(
                 {
                     "type": "atempo_segment",
+                    "input": str(rec_audio_path),
+                    "start": rs,
+                    "duration": in_dur,
                     "factor": factor,
-                    "start": rec_start,
-                    "duration": rec_chunk_dur,
-                    "index": i,
                 }
             )
-
-            norm_start = cam_start / audio_span if audio_span > 0 else 0.0
-            norm_end = cam_end / audio_span if audio_span > 0 else 0.0
-            blocks.append({"start": norm_start, "end": norm_end, "label": f"K={k_local:.3f}"})
-
-        self._diagram_data = {"type": "local", "blocks": blocks}
-
-        return SyncPlan(
-            strategy_id=self.strategy_id,
-            clips=clips,
-            audio_ops=audio_ops,
-            total_duration=_timeline_end(clips),
-        )
-
-    @property
-    def diagram_data(self) -> dict[str, Any]:
-        return self._diagram_data
+        return clips, ops
 
 
 class SilencePaddingStrategy(SyncStrategy):
-    """Extract speech segments as-is, insert/remove silence between them for alignment."""
-
     strategy_id = 3
     name = "Silence Padding"
-    description = (
-        "Extract speech segments between anchors without resampling "
-        "and pad or trim silence between them."
-    )
+    description = "Speech left untouched (zero pitch shift); only inter-phrase gaps move."
 
-    def __init__(self) -> None:
-        self._diagram_data: dict[str, Any] = {}
-        self.warnings: list[str] = []
-
-    def plan(
+    def plan_clip(
         self,
         alignment: AlignmentMap,
         rec_audio_path: Path,
+        clip_offset: float,
+        clip_duration: float,
         rec_duration: float,
-        video_clips: list[MediaClip],
-    ) -> SyncPlan:
+        config: BormoSyncConfig,
+    ) -> ClipPlan:
         anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
-        self.warnings.clear()
-
         if not anchors:
-            logger.warning("No anchors — falling back to global strategy")
-            return GlobalLinearStrategy().plan(alignment, rec_audio_path, rec_duration, video_clips)
+            return GlobalLinearStrategy().plan_clip(
+                alignment, rec_audio_path, clip_offset, clip_duration, rec_duration, config
+            )
 
-        clips: list[MediaClip] = list(video_clips)
-        audio_ops: list[dict[str, Any]] = []
-        blocks: list[dict[str, Any]] = []
-        current_cam = alignment.offset
-
-        # initial silence before first anchor
-        first_gap = anchors[0].cam_time - current_cam
-        if first_gap > 0:
-            audio_ops.append({"type": "silence", "duration": first_gap})
-            blocks.append({"start": 0.0, "end": first_gap, "kind": "silence"})
-            current_cam = anchors[0].cam_time
-
-        for i in range(len(anchors) - 1):
-            a0 = anchors[i]
-            a1 = anchors[i + 1]
-            rec_dur = a1.rec_time - a0.rec_time
-            if rec_dur <= 0:
+        clips: list[MediaClip] = []
+        ops: list[AudioOp] = []
+        for rs, re in _speech_blocks(anchors, config.phrase_gap_threshold):
+            rs_c = _clamp(rs, 0.0, rec_duration)
+            re_c = _clamp(max(re, rs + _MIN_BLOCK_DUR), 0.0, rec_duration)
+            dur = re_c - rs_c
+            if dur <= 1e-4:
                 continue
-
-            # speech segment
+            local_start = _rec_to_local(alignment, rs_c)
             clips.append(
                 MediaClip(
                     path=rec_audio_path,
                     kind="audio",
-                    offset=a0.cam_time,
-                    in_point=a0.rec_time,
-                    duration=rec_dur,
+                    offset=clip_offset + local_start,
+                    in_point=0.0,
+                    duration=dur,
                     lane=-1,
                 )
             )
-            audio_ops.append(
+            ops.append(
                 {
                     "type": "extract",
                     "input": str(rec_audio_path),
-                    "start": a0.rec_time,
-                    "duration": rec_dur,
+                    "start": rs_c,
+                    "duration": dur,
                 }
             )
-            blocks.append({"start": a0.cam_time, "end": a0.cam_time + rec_dur, "kind": "speech"})
-            seg_end_cam = a0.cam_time + rec_dur
+        return clips, ops
 
-            # gap to next anchor
-            gap = a1.cam_time - seg_end_cam
-            if gap > 0:
-                audio_ops.append({"type": "silence", "duration": gap})
-                blocks.append({"start": seg_end_cam, "end": a1.cam_time, "kind": "silence"})
-                current_cam = a1.cam_time
-            elif gap < 0:
-                msg = (
-                    f"Negative gap {gap:.3f}s between anchor "
-                    f"{a0.token} and {a1.token} — possible overlap"
+
+class HybridStrategy(SyncStrategy):
+    strategy_id = 4
+    name = "Hybrid (Global + Silence)"
+    description = (
+        "Each phrase is tempo-corrected by the clip's global K, then placed at "
+        "its anchor position with silence absorbing the rest. Robust + near pitch-perfect."
+    )
+
+    def plan_clip(
+        self,
+        alignment: AlignmentMap,
+        rec_audio_path: Path,
+        clip_offset: float,
+        clip_duration: float,
+        rec_duration: float,
+        config: BormoSyncConfig,
+    ) -> ClipPlan:
+        anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
+        if not anchors:
+            return GlobalLinearStrategy().plan_clip(
+                alignment, rec_audio_path, clip_offset, clip_duration, rec_duration, config
+            )
+
+        factor = 1.0 / alignment.k  # global linear calibration
+        clips: list[MediaClip] = []
+        ops: list[AudioOp] = []
+        for rs, re in _speech_blocks(anchors, config.phrase_gap_threshold):
+            rs_c = _clamp(rs, 0.0, rec_duration)
+            re_c = _clamp(max(re, rs + _MIN_BLOCK_DUR), 0.0, rec_duration)
+            in_dur = re_c - rs_c
+            if in_dur <= 1e-4:
+                continue
+            local_start = _rec_to_local(alignment, rs_c)
+            out_dur = alignment.k * in_dur  # camera-equivalent length
+            clips.append(
+                MediaClip(
+                    path=rec_audio_path,
+                    kind="audio",
+                    offset=clip_offset + local_start,
+                    in_point=0.0,
+                    duration=out_dur,
+                    lane=-1,
                 )
-                logger.warning(msg)
-                self.warnings.append(msg)
-                current_cam = a1.cam_time
-            else:
-                current_cam = a1.cam_time
+            )
+            ops.append(
+                {
+                    "type": "atempo_segment",
+                    "input": str(rec_audio_path),
+                    "start": rs_c,
+                    "duration": in_dur,
+                    "factor": factor,
+                }
+            )
+        return clips, ops
 
-        # trailing silence after last anchor
-        final_cam = alignment.rec_to_cam(rec_duration)
-        if len(anchors) >= 2:
-            last_seg_end = anchors[-1].cam_time + (anchors[-1].rec_time - anchors[-2].rec_time)
-        else:
-            last_seg_end = anchors[-1].cam_time + (rec_duration - anchors[-1].rec_time)
-        last_gap = final_cam - last_seg_end
-        if last_gap > 0:
-            audio_ops.append({"type": "silence", "duration": last_gap})
-            blocks.append({"start": last_seg_end, "end": final_cam, "kind": "silence"})
 
-        audio_span = final_cam - alignment.offset
-
-        # normalize blocks to 0-1
-        if audio_span > 0:
-            for b in blocks:
-                b["start"] = b["start"] / audio_span
-                b["end"] = b["end"] / audio_span
-
-        self._diagram_data = {"type": "padding", "blocks": blocks}
-
-        return SyncPlan(
-            strategy_id=self.strategy_id,
-            clips=clips,
-            audio_ops=audio_ops,
-            total_duration=_timeline_end(clips),
-        )
-
-    @property
-    def diagram_data(self) -> dict[str, Any]:
-        return self._diagram_data
+STRATEGIES: dict[int, type[SyncStrategy]] = {
+    1: GlobalLinearStrategy,
+    2: LocalTimeStretchStrategy,
+    3: SilencePaddingStrategy,
+    4: HybridStrategy,
+}
 
 
 def get_strategy(strategy_id: int) -> SyncStrategy:
-    """Return a SyncStrategy instance for the given strategy_id."""
-    strategies: dict[int, type[SyncStrategy]] = {
-        1: GlobalLinearStrategy,
-        2: LocalTimeStretchStrategy,
-        3: SilencePaddingStrategy,
-    }
-    cls = strategies.get(strategy_id)
+    cls = STRATEGIES.get(strategy_id)
     if cls is None:
-        raise ValueError(f"Unknown strategy_id {strategy_id}. Valid ids: {list(strategies)}")
+        raise ValueError(f"Unknown strategy_id {strategy_id}. Valid ids: {list(STRATEGIES)}")
     return cls()

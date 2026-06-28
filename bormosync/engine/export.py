@@ -28,12 +28,17 @@ def generate_fcpxml(
     output_path: Path,
     fcpxml_version: str = "1.9",
     project_name: str = "BormoSync",
+    audio_sample_rate: int | None = None,
 ) -> Path:
     ref_video = video_infos[0] if video_infos else None
     fps: Fraction = (ref_video.fps or Fraction(25, 1)) if ref_video else Fraction(25, 1)
     width: int = ref_video.width or 1920 if ref_video else 1920
     height: int = ref_video.height or 1080 if ref_video else 1080
-    sample_rate: int = ref_video.audio_sample_rate or 48000 if ref_video else 48000
+    # Audio timebase: caller override (e.g. recorder rate) wins, else camera's.
+    if audio_sample_rate:
+        sample_rate: int = audio_sample_rate
+    else:
+        sample_rate = (ref_video.audio_sample_rate or 48000) if ref_video else 48000
     timebase = fps.numerator
 
     frame_dur = fps_to_frame_duration(fps)

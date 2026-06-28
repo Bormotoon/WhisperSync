@@ -9,7 +9,9 @@ from PyQt6.QtCore import QSettings, Qt, QThread
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -98,11 +100,19 @@ class MainWindow(QMainWindow):
         self.radio1 = QRadioButton("1 — Global Linear Calibration")
         self.radio2 = QRadioButton("2 — Local Time-Stretch")
         self.radio3 = QRadioButton("3 — Silence Padding (pitch-safe)")
+        self.radio4 = QRadioButton("4 — Hybrid (Global + Silence)")
         self.radio1.setChecked(True)
-        for r in (self.radio1, self.radio2, self.radio3):
+        for r in (self.radio1, self.radio2, self.radio3, self.radio4):
             r.toggled.connect(self._on_strategy_changed)
             strategy_layout.addWidget(r)
         left_layout.addWidget(strategy_group)
+
+        options_group = QGroupBox("Options")
+        options_layout = QFormLayout(options_group)
+        self.timebase_combo = QComboBox()
+        self.timebase_combo.addItems(["camera", "recorder"])
+        options_layout.addRow("Timebase source:", self.timebase_combo)
+        left_layout.addWidget(options_group)
 
         self.btn_sync = QPushButton("SYNC")
         self.btn_sync.setMinimumHeight(48)
@@ -181,6 +191,8 @@ class MainWindow(QMainWindow):
             return 2
         if self.radio3.isChecked():
             return 3
+        if self.radio4.isChecked():
+            return 4
         return 1
 
     def _on_strategy_changed(self) -> None:
@@ -223,6 +235,7 @@ class MainWindow(QMainWindow):
         output_path = output_dir / "sync_output.fcpxml"
 
         strategy_id = self._get_strategy_id()
+        self.config.timebase_source = self.timebase_combo.currentText()
 
         self.btn_sync.setEnabled(False)
         self.btn_cancel.setEnabled(True)

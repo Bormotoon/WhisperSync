@@ -1,125 +1,94 @@
-"""Tests for synchronization strategies on synthetic alignment data."""
+"""Tests for per-clip synchronization strategies."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from bormosync.config import BormoSyncConfig
 from bormosync.engine.strategies import get_strategy
-from bormosync.models import AlignmentMap, Anchor, MediaClip
+from bormosync.models import AlignmentMap, Anchor
+
+REC = Path("/audio/recorder.wav")
 
 
-def _make_alignment(offset: float = 2.0, k: float = 1.001, n_anchors: int = 10) -> AlignmentMap:
-    anchors = []
-    for i in range(n_anchors):
-        rec_t = 5.0 + i * 10.0
-        cam_t = offset + k * rec_t
-        anchors.append(Anchor(cam_time=cam_t, rec_time=rec_t, token=f"word{i}", confidence=0.9))
-    return AlignmentMap(anchors=anchors, offset=offset, k=k, residual_ms=5.0)
-
-
-def _make_video_clips() -> list[MediaClip]:
-    return [
-        MediaClip(
-            path=Path("/videos/clip1.mp4"),
-            kind="video",
-            offset=0.0,
-            in_point=0.0,
-            duration=120.0,
-            lane=1,
-        ),
+def _alignment(offset: float, k: float, rec_times: list[float]) -> AlignmentMap:
+    """Build alignment t_local = offset + k * t_rec with anchors at the given
+    recorder times."""
+    anchors = [
+        Anchor(cam_time=offset + k * r, rec_time=r, token=f"w{i}", confidence=0.9)
+        for i, r in enumerate(rec_times)
     ]
+    return AlignmentMap(anchors=anchors, offset=offset, k=k, residual_ms=2.0)
 
 
-def test_strategy1_global_linear() -> None:
-    alignment = _make_alignment(offset=2.0, k=1.001)
-    strategy = get_strategy(1)
-    rec_path = Path("/audio/recorder.wav")
-
-    plan = strategy.plan(alignment, rec_path, rec_duration=100.0, video_clips=_make_video_clips())
-
-    assert plan.strategy_id == 1
-    audio_clips = [c for c in plan.clips if c.kind == "audio"]
-    assert len(audio_clips) == 1
-
-    clip = audio_clips[0]
-    assert abs(clip.offset - 2.0) < 0.1
-    assert abs(clip.duration - 100.0 * 1.001) < 0.5
-
-    assert len(plan.audio_ops) == 1
-    assert plan.audio_ops[0]["type"] == "atempo"
+def _two_dense_blocks(offset: float, k: float, pause: float = 4.0) -> AlignmentMap:
+    """Two phrases of densely-spaced anchors separated by a long pause."""
+    block1 = [1.0 + 0.25 * j for j in range(5)]  # 1.00 .. 2.00
+    block2 = [block1[-1] + pause + 0.25 * j for j in range(5)]
+    return _alignment(offset, k, block1 + block2)
 
 
-def test_strategy2_local_timestretch() -> None:
-    alignment = _make_alignment(offset=2.0, k=1.001, n_anchors=10)
-    strategy = get_strategy(2)
-    rec_path = Path("/audio/recorder.wav")
+def _rec_to_local(am: AlignmentMap, r: float) -> float:
+    return am.offset + am.k * r
 
-    plan = strategy.plan(alignment, rec_path, rec_duration=100.0, video_clips=[])
 
-    assert plan.strategy_id == 2
-    assert len(plan.audio_ops) >= 2
+CONFIG = BormoSyncConfig()
 
-    for op in plan.audio_ops:
+
+def test_strategy1_single_clip() -> None:
+    k = 1.001
+    am = _alignment(offset=-5.0 * k, k=k, rec_times=[5.0, 9.0, 13.0])
+    clips, ops = get_strategy(1).plan_clip(am, REC, 100.0, 10.0, 200.0, CONFIG)
+
+    assert len(clips) == 1 and len(ops) == 1
+    assert clips[0].lane == -1
+    assert abs(clips[0].offset - 100.0) < 0.05  # audio starts at clip offset
+    assert abs(clips[0].duration - 10.0) < 0.1
+    assert ops[0]["type"] == "atempo_segment"
+    assert abs(float(ops[0]["factor"]) - 1.0 / k) < 1e-4
+
+
+def test_strategy3_makes_speech_blocks() -> None:
+    am = _two_dense_blocks(offset=0.0, k=1.0)
+    clips, ops = get_strategy(3).plan_clip(am, REC, 50.0, 20.0, 200.0, CONFIG)
+
+    assert len(clips) == len(ops) == 2  # exactly two phrases
+    for op in ops:
+        assert op["type"] == "extract"  # pitch-safe: no tempo change
+
+
+def test_strategy4_hybrid_stretches_blocks() -> None:
+    k = 1.002
+    am = _two_dense_blocks(offset=0.0, k=k)
+    clips, ops = get_strategy(4).plan_clip(am, REC, 0.0, 20.0, 200.0, CONFIG)
+
+    assert len(clips) == len(ops) == 2
+    for op in ops:
         assert op["type"] == "atempo_segment"
-        assert "factor" in op
+        assert abs(float(op["factor"]) - 1.0 / k) < 1e-4
 
 
-def test_strategy3_silence_padding() -> None:
-    alignment = _make_alignment(offset=2.0, k=1.001, n_anchors=10)
-    strategy = get_strategy(3)
-    rec_path = Path("/audio/recorder.wav")
+def test_all_strategies_place_audio_at_matched_timecode() -> None:
+    """Core invariant: every produced audio clip sits at
+    clip_offset + rec_to_local(op.start) — i.e. under the matching camera time.
+    This is what guarantees timecode-accurate sync for any clip layout."""
+    k = 1.0015
+    clip_offset = 250.0
+    am = _two_dense_blocks(offset=-3.0 * k, k=k)
 
-    plan = strategy.plan(alignment, rec_path, rec_duration=100.0, video_clips=[])
-
-    assert plan.strategy_id == 3
-    audio_clips = [c for c in plan.clips if c.kind == "audio"]
-    assert len(audio_clips) >= 1
-
-    for clip in audio_clips:
-        assert clip.lane == -1
-
-
-def test_all_strategies_preserve_video_clips() -> None:
-    """Every strategy must keep video clips (lane 1) in the plan, otherwise
-    the exported FCPXML would contain no video at all."""
-    alignment = _make_alignment(offset=2.0, k=1.001, n_anchors=12)
-    video_clips = _make_video_clips()
-
-    for sid in (1, 2, 3):
-        strategy = get_strategy(sid)
-        plan = strategy.plan(
-            alignment,
-            Path("/audio/rec.wav"),
-            rec_duration=100.0,
-            video_clips=video_clips,
-        )
-        video = [c for c in plan.clips if c.kind == "video"]
-        audio = [c for c in plan.clips if c.kind == "audio"]
-        assert len(video) == 1, f"Strategy {sid} dropped video clips"
-        assert video[0].lane == 1
-        assert len(audio) >= 1, f"Strategy {sid} produced no audio clips"
-        # timeline must span at least the video extent
-        assert plan.total_duration >= video[0].offset + video[0].duration - 1e-6
+    for sid in (1, 2, 3, 4):
+        clips, ops = get_strategy(sid).plan_clip(am, REC, clip_offset, 27.0, 300.0, CONFIG)
+        assert len(clips) == len(ops) >= 1
+        for clip, op in zip(clips, ops, strict=True):
+            expected = clip_offset + _rec_to_local(am, float(op["start"]))
+            assert abs(clip.offset - expected) < 1e-6, f"strategy {sid} mis-placed audio"
+            assert clip.lane == -1
+            assert clip.in_point == 0.0
 
 
-def test_strategy_offsets_within_tolerance() -> None:
-    true_offset = 3.5
-    true_k = 1.0005
-    alignment = _make_alignment(offset=true_offset, k=true_k, n_anchors=20)
-
-    for sid in [1, 2, 3]:
-        strategy = get_strategy(sid)
-        plan = strategy.plan(
-            alignment,
-            Path("/audio/rec.wav"),
-            rec_duration=200.0,
-            video_clips=[],
-        )
-        audio_clips = [c for c in plan.clips if c.kind == "audio"]
-        for clip in audio_clips:
-            expected_cam = true_offset + true_k * clip.in_point
-            error_ms = abs(clip.offset - expected_cam) * 1000
-            assert error_ms < 100, (
-                f"Strategy {sid}: clip at rec={clip.in_point:.2f}s "
-                f"offset error {error_ms:.1f}ms > 100ms"
-            )
+def test_strategy_falls_back_when_no_anchors() -> None:
+    am = AlignmentMap(anchors=[], offset=-2.0, k=1.0, residual_ms=0.0)
+    for sid in (2, 3, 4):
+        clips, ops = get_strategy(sid).plan_clip(am, REC, 0.0, 10.0, 100.0, CONFIG)
+        # falls back to global-linear: a single tempo segment
+        assert len(clips) == 1 and ops[0]["type"] == "atempo_segment"

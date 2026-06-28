@@ -1,4 +1,9 @@
-"""End-to-end orchestration pipeline with progress signals."""
+"""End-to-end orchestration pipeline with progress signals.
+
+The recorder is the continuous reference. Each camera clip is transcribed and
+aligned to the recorder independently, so a clip's position on the master
+timeline comes from matched timecodes — clips need not be contiguous.
+"""
 
 from __future__ import annotations
 
@@ -14,9 +19,9 @@ from bormosync.engine.export import generate_fcpxml
 from bormosync.engine.matcher import align
 from bormosync.engine.media import MediaInfo, extract_audio_to_wav, probe
 from bormosync.engine.strategies import get_strategy
-from bormosync.engine.timestretch import apply_atempo, apply_atempo_segment, extract_segment
+from bormosync.engine.timestretch import apply_atempo_segment, extract_segment
 from bormosync.engine.transcriber import WhisperEngine
-from bormosync.models import MediaClip, Segment, SyncResult, Transcript, Word
+from bormosync.models import AlignmentMap, MediaClip, SyncResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +39,8 @@ ProgressCallback = Callable[[PipelineProgress], None]
 def scan_video_clips(
     video_dir: Path, config: BormoSyncConfig
 ) -> tuple[list[MediaInfo], list[MediaClip]]:
-    """Probe every video in the folder (sorted by name) and lay the clips
-    end-to-end on the camera timeline (offset += previous durations).
-
-    Assumes the camera recorded one continuous take split into files, which is
-    the common auto-split case for DJI Pocket and similar cameras.
-    """
+    """Probe every video in the folder (sorted by name). Offsets are left at 0
+    here — real timeline positions are computed later from matched timecodes."""
     exts = tuple(config.video_exts)
     video_paths = sorted(
         (p for p in video_dir.iterdir() if p.suffix.lower() in exts),
@@ -50,7 +51,6 @@ def scan_video_clips(
 
     video_infos: list[MediaInfo] = []
     video_clips: list[MediaClip] = []
-    offset = 0.0
     for path in video_paths:
         info = probe(path)
         video_infos.append(info)
@@ -58,67 +58,52 @@ def scan_video_clips(
             MediaClip(
                 path=path,
                 kind="video",
-                offset=offset,
+                offset=0.0,
                 in_point=0.0,
                 duration=info.duration,
                 lane=1,
             )
         )
-        offset += info.duration
 
     return video_infos, video_clips
 
 
-def build_camera_transcript(
-    engine: WhisperEngine,
-    video_clips: list[MediaClip],
-    cleanup_paths: list[Path],
-    progress_callback: Callable[[float], None] | None = None,
-) -> Transcript:
-    """Transcribe the scratch audio of *every* camera clip and merge the
-    results into a single transcript on the concatenated camera timeline.
+def compute_master_offsets(
+    alignments: list[AlignmentMap | None], durations: list[float]
+) -> tuple[list[float], list[int]]:
+    """Place each clip on the master timeline (recorder seconds) from its
+    matched recorder start time ``-offset/k``, anchored so the earliest clip
+    sits at 0. Clips that could not be aligned fall back to following the
+    previous clip and are reported by index.
 
-    Each clip's word/segment times are shifted by the clip's timeline offset so
-    anchors map the recorder onto the full multi-clip camera timeline rather
-    than just the first file.
+    Returns (offsets, unaligned_indices).
     """
-    merged: list[Segment] = []
-    total = sum(c.duration for c in video_clips) or 1.0
-    done = 0.0
-    language = "en"
+    rec_starts: list[float | None] = []
+    for am in alignments:
+        if am is not None and am.k != 0:
+            rec_starts.append(-am.offset / am.k)
+        else:
+            rec_starts.append(None)
 
-    for clip in video_clips:
-        clip_audio = extract_audio_to_wav(clip.path)
-        cleanup_paths.append(clip_audio)
-        t = engine.transcribe(clip_audio)
-        language = t.language or language
-        shift = clip.offset
-        for seg in t.segments:
-            merged.append(
-                Segment(
-                    start=seg.start + shift,
-                    end=seg.end + shift,
-                    words=[
-                        Word(
-                            text=w.text,
-                            start=w.start + shift,
-                            end=w.end + shift,
-                            probability=w.probability,
-                        )
-                        for w in seg.words
-                    ],
-                )
-            )
-        done += clip.duration
-        if progress_callback:
-            progress_callback(min(done / total, 1.0))
+    aligned = [r for r in rec_starts if r is not None]
+    ref = min(aligned) if aligned else 0.0
 
-    return Transcript(
-        source_path=video_clips[0].path,
-        language=language,
-        duration=total,
-        segments=merged,
-    )
+    offsets: list[float] = []
+    unaligned: list[int] = []
+    prev_end = 0.0
+    for i, (rs, dur) in enumerate(zip(rec_starts, durations, strict=True)):
+        if rs is not None:
+            off = rs - ref
+        else:
+            off = prev_end
+            unaligned.append(i)
+        offsets.append(off)
+        prev_end = off + dur
+    return offsets, unaligned
+
+
+def _timeline_end(clips: list[MediaClip]) -> float:
+    return max((c.offset + c.duration for c in clips), default=0.0)
 
 
 def run_pipeline(
@@ -135,6 +120,7 @@ def run_pipeline(
 
     engine: WhisperEngine | None = None
     cleanup_paths: list[Path] = []
+    warnings: list[str] = []
 
     try:
         # --- scanning ---
@@ -142,48 +128,76 @@ def run_pipeline(
         video_infos, video_clips = scan_video_clips(video_dir, config)
         _notify("scanning", 1.0, f"Found {len(video_clips)} video clip(s)")
 
-        # --- transcribing ---
+        # --- transcribe recorder once ---
         engine = WhisperEngine(config)
-
-        def _make_transcribe_callback(stage: str) -> Callable[[float], None]:
-            def _cb(progress: float) -> None:
-                _notify(stage, progress)
-
-            return _cb
-
-        # Transcribe the scratch audio of every camera clip, merged onto the
-        # full camera timeline (not just the first file).
-        _notify("transcribing_camera", 0.0, "Transcribing camera audio (all clips)...")
-        cam_transcript = build_camera_transcript(
-            engine,
-            video_clips,
-            cleanup_paths,
-            _make_transcribe_callback("transcribing_camera"),
-        )
-
+        rec_info = probe(audio_file)
         _notify("transcribing_recorder", 0.0, "Transcribing recorder audio...")
         rec_transcript = engine.transcribe(
-            audio_file, _make_transcribe_callback("transcribing_recorder")
+            audio_file, lambda p: _notify("transcribing_recorder", p)
         )
 
-        # --- aligning ---
-        _notify("aligning", 0.0, "Aligning transcripts...")
-        alignment = align(cam_transcript, rec_transcript, config)
+        # --- transcribe + align each clip independently ---
+        alignments: list[AlignmentMap | None] = []
+        n = len(video_clips)
+        for idx, clip in enumerate(video_clips):
+            _notify(
+                "transcribing_camera",
+                idx / max(n, 1),
+                f"Transcribing camera clip {idx + 1}/{n}: {clip.path.name}",
+            )
+            clip_audio = extract_audio_to_wav(clip.path)
+            cleanup_paths.append(clip_audio)
+            clip_transcript = engine.transcribe(clip_audio)
+            try:
+                am = align(clip_transcript, rec_transcript, config)
+            except ValueError as e:
+                logger.warning("Clip %s could not be aligned: %s", clip.path.name, e)
+                warnings.append(f"{clip.path.name}: not aligned ({e})")
+                am = None
+            alignments.append(am)
 
-        # --- planning ---
-        _notify("planning", 0.0, "Generating sync plan...")
+        if all(a is None for a in alignments):
+            raise RuntimeError("No camera clip could be aligned to the recorder audio.")
+
+        # --- place clips on the master timeline from timecodes ---
+        _notify("aligning", 1.0, "Placing clips on timeline...")
+        durations = [c.duration for c in video_clips]
+        offsets, unaligned = compute_master_offsets(alignments, durations)
+        for clip, off in zip(video_clips, offsets, strict=True):
+            clip.offset = off
+        for i in unaligned:
+            warnings.append(f"{video_clips[i].path.name}: placed by order (no anchors)")
+
+        # --- plan audio per clip with the chosen strategy ---
+        _notify("planning", 0.0, "Planning sync strategy...")
         strategy = get_strategy(strategy_id)
-        plan = strategy.plan(alignment, audio_file, rec_transcript.duration, video_clips)
+        audio_clips: list[MediaClip] = []
+        audio_ops: list[dict[str, object]] = []
+        for clip, am in zip(video_clips, alignments, strict=True):
+            if am is None:
+                continue
+            cs, ops = strategy.plan_clip(
+                am, audio_file, clip.offset, clip.duration, rec_info.duration, config
+            )
+            audio_clips.extend(cs)
+            audio_ops.extend(ops)
 
-        # --- processing ---
+        from bormosync.models import SyncPlan
+
+        all_clips = video_clips + audio_clips
+        plan = SyncPlan(
+            strategy_id=strategy_id,
+            clips=all_clips,
+            audio_ops=audio_ops,
+            total_duration=_timeline_end(all_clips),
+        )
+        _notify("planning", 1.0, f"Strategy {strategy_id}: {strategy.name}")
+
+        # --- process audio operations ---
         _notify("processing", 0.0, "Processing audio operations...")
         audio_synced_dir = output_path.parent / "audio_synced"
         audio_synced_dir.mkdir(parents=True, exist_ok=True)
 
-        # Audio clips are filled in the same order their ops are emitted by the
-        # strategy. Video clips live in plan.clips too, so we walk audio clips
-        # explicitly rather than indexing plan.clips by position.
-        audio_clips = [c for c in plan.clips if c.kind == "audio"]
         audio_idx = 0
         seg_index = 0
         n_ops = max(len(plan.audio_ops), 1)
@@ -191,23 +205,15 @@ def run_pipeline(
         def _assign(out_path: Path) -> None:
             nonlocal audio_idx
             if audio_idx < len(audio_clips):
-                clip = audio_clips[audio_idx]
-                clip.path = out_path
-                # The produced file is already trimmed/stretched, so the clip
-                # must read from its start, not the original recorder offset.
-                clip.in_point = 0.0
+                audio_clips[audio_idx].path = out_path
+                audio_clips[audio_idx].in_point = 0.0
                 audio_idx += 1
 
         for i, op in enumerate(plan.audio_ops):
             op_type = op["type"]
-            if op_type == "atempo":
-                out = apply_atempo(
-                    Path(op["input"]), audio_synced_dir / "synced.wav", float(op["factor"])
-                )
-                _assign(out)
-            elif op_type == "atempo_segment":
+            if op_type == "atempo_segment":
                 out = apply_atempo_segment(
-                    audio_file,
+                    Path(str(op["input"])),
                     audio_synced_dir,
                     float(op["start"]),
                     float(op["duration"]),
@@ -218,7 +224,7 @@ def run_pipeline(
                 seg_index += 1
             elif op_type == "extract":
                 out = extract_segment(
-                    Path(op.get("input", str(audio_file))),
+                    Path(str(op["input"])),
                     audio_synced_dir,
                     float(op["start"]),
                     float(op["duration"]),
@@ -226,33 +232,39 @@ def run_pipeline(
                 )
                 _assign(out)
                 seg_index += 1
-            elif op_type == "silence":
-                # Silence gaps are implicit in clip offsets for the clip-based
-                # layout; nothing to render.
-                pass
             else:
                 logger.warning("Unknown audio op type '%s' — skipping", op_type)
-
             _notify("processing", (i + 1) / n_ops)
 
-        # --- exporting ---
+        # --- export ---
         _notify("exporting", 0.0, "Generating FCPXML...")
-        generate_fcpxml(plan, video_infos, output_path, config.fcpxml_version, output_path.stem)
+        if config.timebase_source == "recorder" and rec_info.audio_sample_rate:
+            audio_sr: int | None = rec_info.audio_sample_rate
+        else:
+            audio_sr = None  # export derives it from the camera
+        generate_fcpxml(
+            plan,
+            video_infos,
+            output_path,
+            config.fcpxml_version,
+            output_path.stem,
+            audio_sample_rate=audio_sr,
+        )
 
-        warnings: list[str] = list(getattr(strategy, "warnings", []))
-        if alignment.residual_ms > 40:
-            warnings.append(f"High residual alignment error: {alignment.residual_ms:.1f} ms")
-        if len(alignment.anchors) < config.min_anchors:
-            warnings.append(
-                f"Low anchor count: {len(alignment.anchors)} < {config.min_anchors} recommended"
-            )
+        # --- collect quality warnings from the best clip alignment ---
+        best = max(
+            (a for a in alignments if a is not None),
+            key=lambda a: len(a.anchors),
+        )
+        if best.residual_ms > 40:
+            warnings.append(f"High residual alignment error: {best.residual_ms:.1f} ms")
 
         _notify("done", 1.0, "Pipeline complete")
         return SyncResult(
             fcpxml_path=output_path,
-            alignment=alignment,
+            alignment=best,
             plan=plan,
-            anchors_used=len(alignment.anchors),
+            anchors_used=sum(len(a.anchors) for a in alignments if a is not None),
             warnings=warnings,
         )
 

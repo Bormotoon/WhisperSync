@@ -16,8 +16,15 @@ DEFAULT_AUDIO_EXTS = [".wav", ".mp3", ".m4a", ".flac"]
 MIN_ANCHORS = 8
 ANCHOR_MIN_CONFIDENCE = 0.6
 
+# Minimum silence (seconds) between consecutive anchors to split speech blocks
+# in the silence-padding / hybrid strategies.
+PHRASE_GAP_THRESHOLD = 0.6
+
 WHISPER_BEAM_SIZE = 5
 WHISPER_TEMPERATURE = 0.0
+
+# Which source provides the audio sample-rate reference for FCPXML time values.
+TIMEBASE_SOURCES = ("camera", "recorder")
 
 
 @dataclass
@@ -34,8 +41,10 @@ class BormoSyncConfig:
     cache_dir: str | None = None
     output_dir: str | None = None
     use_cache: bool = True
+    timebase_source: str = "camera"
     min_anchors: int = MIN_ANCHORS
     anchor_min_confidence: float = ANCHOR_MIN_CONFIDENCE
+    phrase_gap_threshold: float = PHRASE_GAP_THRESHOLD
 
     @property
     def resolved_cache_dir(self) -> Path:

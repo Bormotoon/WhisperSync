@@ -65,10 +65,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--strategy",
-        choices=[1, 2, 3],
+        choices=[1, 2, 3, 4],
         default=1,
         type=int,
-        help="Sync strategy (default: 1)",
+        help="Sync strategy: 1=global linear, 2=local stretch, 3=silence padding, "
+        "4=hybrid (default: 1)",
+    )
+    parser.add_argument(
+        "--timebase-source",
+        choices=["camera", "recorder"],
+        default=None,
+        help="Audio sample-rate reference for FCPXML time values (default: camera)",
     )
     parser.add_argument(
         "--output",
@@ -106,7 +113,8 @@ def _run_dry_run(
     from contextlib import suppress
 
     from bormosync.engine.matcher import align as match_align
-    from bormosync.engine.pipeline import build_camera_transcript, scan_video_clips
+    from bormosync.engine.media import extract_audio_to_wav
+    from bormosync.engine.pipeline import scan_video_clips
     from bormosync.engine.transcriber import WhisperEngine
 
     def _notify(stage: str, progress: float = 0.0, message: str = "") -> None:
@@ -123,21 +131,30 @@ def _run_dry_run(
 
         engine = WhisperEngine(config)
 
-        _notify("transcribing_camera", 0.0, "Transcribing camera audio (all clips)...")
-        cam_transcript = build_camera_transcript(
-            engine, video_clips, cleanup_paths, lambda p: _notify("transcribing_camera", p)
-        )
-
         _notify("transcribing_recorder", 0.0, "Transcribing recorder audio...")
         rec_transcript = engine.transcribe(
             audio_file, lambda p: _notify("transcribing_recorder", p)
         )
 
-        _notify("aligning", 0.0, "Aligning transcripts...")
-        alignment = match_align(cam_transcript, rec_transcript, config)
-        _notify("aligning", 1.0, f"Alignment complete: {len(alignment.anchors)} anchors")
+        # Align each clip independently and return the richest alignment.
+        best: Any = None
+        n = len(video_clips)
+        for idx, clip in enumerate(video_clips):
+            _notify("transcribing_camera", idx / max(n, 1), f"Clip {idx + 1}/{n}: {clip.path.name}")
+            clip_audio = extract_audio_to_wav(clip.path)
+            cleanup_paths.append(clip_audio)
+            clip_transcript = engine.transcribe(clip_audio)
+            try:
+                am = match_align(clip_transcript, rec_transcript, config)
+            except ValueError:
+                continue
+            if best is None or len(am.anchors) > len(best.anchors):
+                best = am
 
-        return alignment
+        if best is None:
+            raise RuntimeError("No camera clip could be aligned to the recorder audio.")
+        _notify("aligning", 1.0, f"Best alignment: {len(best.anchors)} anchors")
+        return best
     finally:
         if engine is not None:
             engine.unload()
@@ -201,6 +218,8 @@ def main() -> None:
         overrides["language"] = args.language
     if args.fcpxml_version:
         overrides["fcpxml_version"] = args.fcpxml_version
+    if args.timebase_source:
+        overrides["timebase_source"] = args.timebase_source
 
     if args.no_cache:
         overrides["use_cache"] = False

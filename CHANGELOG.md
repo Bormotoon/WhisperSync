@@ -4,6 +4,21 @@ All notable changes to BormoSync will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Strategy 4 — Hybrid (Global + Silence):** each phrase is tempo-corrected by
+  the clip's global drift K and then placed at its anchor position with silence
+  absorbing the rest. Robust against non-linear drift and near pitch-perfect.
+- **Per-clip alignment & timecode-based placement:** every camera clip is now
+  aligned to the recorder independently and positioned on the timeline from its
+  matched recorder start time. Clips are no longer assumed contiguous — real
+  gaps between recordings are preserved (works for arbitrary sources).
+- **Timebase source selection** (`timebase_source`, `--timebase-source`, GUI
+  dropdown): choose whether FCPXML audio time values snap to the camera (default)
+  or recorder sample rate.
+
+### Changed
+- Strategies now plan per camera clip (`plan_clip`) instead of one global plan.
+
 ### Fixed
 - **Critical:** only the first camera clip was transcribed, so on the real
   "one long recorder track + many video files" workflow anchors covered just
