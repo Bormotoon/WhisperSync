@@ -33,6 +33,7 @@ class BormoSyncConfig:
     default_strategy: int = 1
     cache_dir: str | None = None
     output_dir: str | None = None
+    use_cache: bool = True
     min_anchors: int = MIN_ANCHORS
     anchor_min_confidence: float = ANCHOR_MIN_CONFIDENCE
 

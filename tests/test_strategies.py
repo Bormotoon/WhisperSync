@@ -79,6 +79,29 @@ def test_strategy3_silence_padding() -> None:
         assert clip.lane == -1
 
 
+def test_all_strategies_preserve_video_clips() -> None:
+    """Every strategy must keep video clips (lane 1) in the plan, otherwise
+    the exported FCPXML would contain no video at all."""
+    alignment = _make_alignment(offset=2.0, k=1.001, n_anchors=12)
+    video_clips = _make_video_clips()
+
+    for sid in (1, 2, 3):
+        strategy = get_strategy(sid)
+        plan = strategy.plan(
+            alignment,
+            Path("/audio/rec.wav"),
+            rec_duration=100.0,
+            video_clips=video_clips,
+        )
+        video = [c for c in plan.clips if c.kind == "video"]
+        audio = [c for c in plan.clips if c.kind == "audio"]
+        assert len(video) == 1, f"Strategy {sid} dropped video clips"
+        assert video[0].lane == 1
+        assert len(audio) >= 1, f"Strategy {sid} produced no audio clips"
+        # timeline must span at least the video extent
+        assert plan.total_duration >= video[0].offset + video[0].duration - 1e-6
+
+
 def test_strategy_offsets_within_tolerance() -> None:
     true_offset = 3.5
     true_k = 1.0005

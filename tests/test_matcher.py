@@ -14,8 +14,7 @@ def _make_transcript(
     source: str = "test.wav",
 ) -> Transcript:
     words = [
-        Word(text=text, start=start, end=end, probability=0.95)
-        for text, start, end in words_data
+        Word(text=text, start=start, end=end, probability=0.95) for text, start, end in words_data
     ]
     seg = Segment(start=words[0].start, end=words[-1].end, words=words)
     return Transcript(
@@ -61,10 +60,26 @@ def test_align_known_offset_and_k() -> None:
     cam_words: list[tuple[str, float, float]] = []
     rec_words: list[tuple[str, float, float]] = []
     tokens = [
-        "alpha", "bravo", "charlie", "delta", "echo",
-        "foxtrot", "golf", "hotel", "india", "juliet",
-        "kilo", "lima", "mike", "november", "oscar",
-        "papa", "quebec", "romeo", "sierra", "tango",
+        "alpha",
+        "bravo",
+        "charlie",
+        "delta",
+        "echo",
+        "foxtrot",
+        "golf",
+        "hotel",
+        "india",
+        "juliet",
+        "kilo",
+        "lima",
+        "mike",
+        "november",
+        "oscar",
+        "papa",
+        "quebec",
+        "romeo",
+        "sierra",
+        "tango",
     ]
 
     for i, token in enumerate(tokens):

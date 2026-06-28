@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 from bormosync.engine.media import build_atempo_chain
 
 

@@ -4,6 +4,25 @@ All notable changes to BormoSync will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Critical:** sync strategies dropped the camera video clips, so exported
+  FCPXML contained no video — all three strategies now keep video on lane 1
+- **Critical:** Local Time-Stretch / Silence Padding produced clips whose
+  `start` pointed past the trimmed segment file length; pipeline now resets
+  `in_point` to 0 after extraction/atempo
+- Sequence/gap duration now spans the full video extent, not just audio
+- FCPXML now emits standard `<asset-clip>` elements (was non-standard
+  `<clip ref=...>`) with audio assets declared on the audio sample-rate
+  timebase and proper `audioRate`/`audioChannels`
+- Strategy and alignment-quality warnings are now propagated into `SyncResult`
+- `--no-cache` now actually disables the transcription cache (`config.use_cache`)
+- Whisper `unload()` now runs `gc.collect()` + `torch.cuda.empty_cache()` to
+  truly free VRAM
+
+### Changed
+- Segment extraction uses fast input seeking (`-ss` before `-i`) to avoid
+  re-decoding the whole recording for every segment
+
 ### Added
 - Project scaffolding with full package structure (bormosync/engine/, gui/, widgets/)
 - Core data models: Word, Segment, Transcript, Anchor, AlignmentMap, MediaClip, SyncPlan, SyncResult

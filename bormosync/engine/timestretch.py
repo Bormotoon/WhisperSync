@@ -44,15 +44,17 @@ def apply_atempo_segment(
     output_path = output_dir / f"segment_{segment_index:04d}.wav"
     chain = build_atempo_chain(factor)
     af = ",".join(chain)
+    # -ss before -i enables fast input seeking (sample-accurate for PCM/WAV),
+    # so cutting many segments doesn't re-decode the whole file each time.
     cmd = [
         "ffmpeg",
         "-y",
-        "-i",
-        str(input_path),
         "-ss",
         str(start),
         "-t",
         str(duration),
+        "-i",
+        str(input_path),
         "-af",
         af,
         "-acodec",
@@ -77,12 +79,12 @@ def extract_segment(
     cmd = [
         "ffmpeg",
         "-y",
-        "-i",
-        str(input_path),
         "-ss",
         str(start),
         "-t",
         str(duration),
+        "-i",
+        str(input_path),
         "-acodec",
         "pcm_s16le",
         str(output_path),

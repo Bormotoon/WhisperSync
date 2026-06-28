@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from fractions import Fraction
 from pathlib import Path
 
 from bormosync.engine.media import build_atempo_chain, path_to_file_uri

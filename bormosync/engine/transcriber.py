@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import logging
@@ -114,10 +115,11 @@ class WhisperEngine:
     ) -> Transcript:
         key = self._cache_key(audio_path, self.config)
         cache_file = self._cache_path(self.config.resolved_cache_dir, key)
-        cached = self._load_cache(cache_file)
-        if cached is not None:
-            logger.info("Loaded transcript from cache for %s", audio_path)
-            return cached
+        if self.config.use_cache:
+            cached = self._load_cache(cache_file)
+            if cached is not None:
+                logger.info("Loaded transcript from cache for %s", audio_path)
+                return cached
 
         self._ensure_model()
         assert self._model is not None
@@ -158,13 +160,22 @@ class WhisperEngine:
             segments=result_segments,
         )
 
-        self._save_cache(cache_file, transcript)
+        if self.config.use_cache:
+            self._save_cache(cache_file, transcript)
         return transcript
 
     def unload(self) -> None:
         if self._model is not None:
             del self._model
             self._model = None
+            gc.collect()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
             logger.info("Whisper model unloaded, VRAM freed")
 
     def __del__(self) -> None:

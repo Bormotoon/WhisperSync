@@ -12,6 +12,11 @@ from bormosync.models import AlignmentMap, MediaClip, SyncPlan
 logger = logging.getLogger(__name__)
 
 
+def _timeline_end(clips: list[MediaClip]) -> float:
+    """Return the latest timeline position reached by any clip."""
+    return max((c.offset + c.duration for c in clips), default=0.0)
+
+
 class SyncStrategy(ABC):
     """Abstract base class for synchronization strategies."""
 
@@ -80,11 +85,12 @@ class GlobalLinearStrategy(SyncStrategy):
             "blocks": [{"start": 0.0, "end": 1.0, "label": f"atempo={factor:.4f}"}],
         }
 
+        clips = list(video_clips) + [clip]
         return SyncPlan(
             strategy_id=self.strategy_id,
-            clips=[clip],
+            clips=clips,
             audio_ops=audio_ops,
-            total_duration=cam_duration,
+            total_duration=_timeline_end(clips),
         )
 
     @property
@@ -122,9 +128,9 @@ class LocalTimeStretchStrategy(SyncStrategy):
             boundaries.append((a.rec_time, a.cam_time))
         boundaries.append((rec_duration, alignment.rec_to_cam(rec_duration)))
 
-        total_duration = boundaries[-1][1] - boundaries[0][1]
+        audio_span = boundaries[-1][1] - boundaries[0][1]
 
-        clips: list[MediaClip] = []
+        clips: list[MediaClip] = list(video_clips)
         audio_ops: list[dict[str, Any]] = []
         blocks: list[dict[str, Any]] = []
 
@@ -160,8 +166,8 @@ class LocalTimeStretchStrategy(SyncStrategy):
                 }
             )
 
-            norm_start = cam_start / total_duration if total_duration > 0 else 0.0
-            norm_end = cam_end / total_duration if total_duration > 0 else 0.0
+            norm_start = cam_start / audio_span if audio_span > 0 else 0.0
+            norm_end = cam_end / audio_span if audio_span > 0 else 0.0
             blocks.append({"start": norm_start, "end": norm_end, "label": f"K={k_local:.3f}"})
 
         self._diagram_data = {"type": "local", "blocks": blocks}
@@ -170,7 +176,7 @@ class LocalTimeStretchStrategy(SyncStrategy):
             strategy_id=self.strategy_id,
             clips=clips,
             audio_ops=audio_ops,
-            total_duration=total_duration,
+            total_duration=_timeline_end(clips),
         )
 
     @property
@@ -206,7 +212,7 @@ class SilencePaddingStrategy(SyncStrategy):
             logger.warning("No anchors — falling back to global strategy")
             return GlobalLinearStrategy().plan(alignment, rec_audio_path, rec_duration, video_clips)
 
-        clips: list[MediaClip] = []
+        clips: list[MediaClip] = list(video_clips)
         audio_ops: list[dict[str, Any]] = []
         blocks: list[dict[str, Any]] = []
         current_cam = alignment.offset
@@ -275,13 +281,13 @@ class SilencePaddingStrategy(SyncStrategy):
             audio_ops.append({"type": "silence", "duration": last_gap})
             blocks.append({"start": last_seg_end, "end": final_cam, "kind": "silence"})
 
-        total_duration = final_cam - alignment.offset
+        audio_span = final_cam - alignment.offset
 
         # normalize blocks to 0-1
-        if total_duration > 0:
+        if audio_span > 0:
             for b in blocks:
-                b["start"] = b["start"] / total_duration
-                b["end"] = b["end"] / total_duration
+                b["start"] = b["start"] / audio_span
+                b["end"] = b["end"] / audio_span
 
         self._diagram_data = {"type": "padding", "blocks": blocks}
 
@@ -289,7 +295,7 @@ class SilencePaddingStrategy(SyncStrategy):
             strategy_id=self.strategy_id,
             clips=clips,
             audio_ops=audio_ops,
-            total_duration=total_duration,
+            total_duration=_timeline_end(clips),
         )
 
     @property

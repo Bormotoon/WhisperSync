@@ -6,7 +6,6 @@ import argparse
 import json
 import logging
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -212,10 +211,10 @@ def main() -> None:
     if args.fcpxml_version:
         overrides["fcpxml_version"] = args.fcpxml_version
 
-    config = load_config(args.config, **overrides)
-
     if args.no_cache:
-        config.cache_dir = tempfile.mkdtemp(prefix="bormosync_nocache_")
+        overrides["use_cache"] = False
+
+    config = load_config(args.config, **overrides)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 

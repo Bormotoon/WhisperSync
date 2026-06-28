@@ -69,21 +69,27 @@ def generate_fcpxml(
         asset_map[path_str] = asset_id
 
         file_uri = path_to_file_uri(clip.path)
-        has_video = "1" if clip.kind == "video" else "0"
-        has_audio = "1"
+        is_video = clip.kind == "video"
+        # Asset duration is expressed on the asset's own timebase: the video
+        # frame grid for video, the audio sample rate for audio.
+        asset_tb = timebase if is_video else sample_rate
+        asset_attrs = {
+            "id": asset_id,
+            "name": clip.path.stem,
+            "src": file_uri,
+            "start": "0s",
+            "duration": to_rational(clip.duration + clip.in_point, asset_tb),
+            "hasVideo": "1" if is_video else "0",
+            "hasAudio": "1",
+        }
+        if is_video:
+            asset_attrs["format"] = fmt_id
+        else:
+            asset_attrs["audioSources"] = "1"
+            asset_attrs["audioChannels"] = "1"
+            asset_attrs["audioRate"] = str(sample_rate)
 
-        asset_el = ET.SubElement(
-            resources,
-            "asset",
-            id=asset_id,
-            name=clip.path.stem,
-            src=file_uri,
-            start="0s",
-            duration=to_rational(clip.duration + clip.in_point, timebase),
-            hasVideo=has_video,
-            hasAudio=has_audio,
-            format=fmt_id,
-        )
+        asset_el = ET.SubElement(resources, "asset", asset_attrs)
         ET.SubElement(asset_el, "media-rep", kind="original-media", src=file_uri)
 
     library = ET.SubElement(root, "library")
@@ -114,17 +120,20 @@ def generate_fcpxml(
         path_str = str(clip.path.resolve())
         ref_id = asset_map.get(path_str, "r2")
 
-        clip_tb = timebase if clip.kind == "video" else (sample_rate or 48000)
+        # Offsets/starts on the gap timeline use the video frame grid so every
+        # element snaps to the same sequence timebase; durations use the clip's
+        # own media timebase.
+        clip_tb = timebase if clip.kind == "video" else sample_rate
 
         ET.SubElement(
             gap,
-            "clip",
+            "asset-clip",
+            ref=ref_id,
             lane=str(clip.lane),
             name=clip.path.stem,
-            offset=to_rational(clip.offset, clip_tb),
+            offset=to_rational(clip.offset, timebase),
             start=to_rational(clip.in_point, clip_tb),
             duration=to_rational(clip.duration, clip_tb),
-            ref=ref_id,
         )
 
     tree = ET.ElementTree(root)
@@ -160,8 +169,8 @@ def validate_fcpxml(path: Path) -> bool:
             logger.error("No <gap> found in spine")
             return False
 
-        clips = gap.findall("clip")
-        logger.info("FCPXML valid: %d clips in spine", len(clips))
+        clips = gap.findall("asset-clip")
+        logger.info("FCPXML valid: %d asset-clips in spine", len(clips))
         return True
 
     except ET.ParseError as e:

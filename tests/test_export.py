@@ -81,12 +81,17 @@ def test_generate_and_validate_fcpxml(tmp_path: Path) -> None:
     gap = spine.find("gap")
     assert gap is not None
 
-    clips = gap.findall("clip")
+    clips = gap.findall("asset-clip")
     assert len(clips) == 2
 
     lanes = {c.get("lane") for c in clips}
     assert "1" in lanes
     assert "-1" in lanes
+
+    # every asset-clip must reference a declared asset
+    asset_ids = {a.get("id") for a in root.findall(".//asset")}
+    for c in clips:
+        assert c.get("ref") in asset_ids
 
 
 def test_fcpxml_roundtrip_times(tmp_path: Path) -> None:
@@ -116,5 +121,5 @@ def test_fcpxml_roundtrip_times(tmp_path: Path) -> None:
     generate_fcpxml(plan, [video_info], out)
 
     tree = ET.parse(out)
-    clips = tree.findall(".//clip")
+    clips = tree.findall(".//asset-clip")
     assert len(clips) == 2

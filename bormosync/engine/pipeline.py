@@ -113,15 +113,31 @@ def run_pipeline(
         audio_synced_dir = output_path.parent / "audio_synced"
         audio_synced_dir.mkdir(parents=True, exist_ok=True)
 
-        segment_counter = 0
+        # Audio clips are filled in the same order their ops are emitted by the
+        # strategy. Video clips live in plan.clips too, so we walk audio clips
+        # explicitly rather than indexing plan.clips by position.
+        audio_clips = [c for c in plan.clips if c.kind == "audio"]
+        audio_idx = 0
+        seg_index = 0
+        n_ops = max(len(plan.audio_ops), 1)
+
+        def _assign(out_path: Path) -> None:
+            nonlocal audio_idx
+            if audio_idx < len(audio_clips):
+                clip = audio_clips[audio_idx]
+                clip.path = out_path
+                # The produced file is already trimmed/stretched, so the clip
+                # must read from its start, not the original recorder offset.
+                clip.in_point = 0.0
+                audio_idx += 1
+
         for i, op in enumerate(plan.audio_ops):
             op_type = op["type"]
             if op_type == "atempo":
-                inp = Path(op["input"])
-                out = apply_atempo(inp, audio_synced_dir / "synced.wav", float(op["factor"]))
-                for clip in plan.clips:
-                    if clip.path == inp:
-                        clip.path = out
+                out = apply_atempo(
+                    Path(op["input"]), audio_synced_dir / "synced.wav", float(op["factor"])
+                )
+                _assign(out)
             elif op_type == "atempo_segment":
                 out = apply_atempo_segment(
                     audio_file,
@@ -129,31 +145,40 @@ def run_pipeline(
                     float(op["start"]),
                     float(op["duration"]),
                     float(op["factor"]),
-                    segment_counter,
+                    seg_index,
                 )
-                if segment_counter < len(plan.clips):
-                    plan.clips[segment_counter].path = out
-                segment_counter += 1
+                _assign(out)
+                seg_index += 1
             elif op_type == "extract":
-                inp = Path(op.get("input", str(audio_file)))
                 out = extract_segment(
-                    inp,
+                    Path(op.get("input", str(audio_file))),
                     audio_synced_dir,
                     float(op["start"]),
                     float(op["duration"]),
-                    segment_counter,
+                    seg_index,
                 )
-                if segment_counter < len(plan.clips):
-                    plan.clips[segment_counter].path = out
-                segment_counter += 1
+                _assign(out)
+                seg_index += 1
+            elif op_type == "silence":
+                # Silence gaps are implicit in clip offsets for the clip-based
+                # layout; nothing to render.
+                pass
             else:
                 logger.warning("Unknown audio op type '%s' — skipping", op_type)
 
-            _notify("processing", (i + 1) / len(plan.audio_ops))
+            _notify("processing", (i + 1) / n_ops)
 
         # --- exporting ---
         _notify("exporting", 0.0, "Generating FCPXML...")
         generate_fcpxml(plan, video_infos, output_path, config.fcpxml_version, output_path.stem)
+
+        warnings: list[str] = list(getattr(strategy, "warnings", []))
+        if alignment.residual_ms > 40:
+            warnings.append(f"High residual alignment error: {alignment.residual_ms:.1f} ms")
+        if len(alignment.anchors) < config.min_anchors:
+            warnings.append(
+                f"Low anchor count: {len(alignment.anchors)} < {config.min_anchors} recommended"
+            )
 
         _notify("done", 1.0, "Pipeline complete")
         return SyncResult(
@@ -161,9 +186,12 @@ def run_pipeline(
             alignment=alignment,
             plan=plan,
             anchors_used=len(alignment.anchors),
-            warnings=[],
+            warnings=warnings,
         )
 
+    except InterruptedError:
+        logger.info("Pipeline cancelled by user")
+        raise
     except Exception:
         logger.exception("Pipeline failed")
         raise
