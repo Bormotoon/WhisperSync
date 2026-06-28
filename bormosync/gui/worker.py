@@ -19,14 +19,14 @@ class SyncWorker(QObject):
         self,
         config: BormoSyncConfig,
         video_dir: Path,
-        audio_file: Path,
+        audio_files: list[Path],
         strategy_id: int,
         output_path: Path,
     ) -> None:
         super().__init__()
         self.config = config
         self.video_dir = video_dir
-        self.audio_file = audio_file
+        self.audio_files = audio_files
         self.strategy_id = strategy_id
         self.output_path = output_path
         self._cancelled = False
@@ -45,7 +45,7 @@ class SyncWorker(QObject):
             result = run_pipeline(
                 config=self.config,
                 video_dir=self.video_dir,
-                audio_file=self.audio_file,
+                audio_files=self.audio_files,
                 strategy_id=self.strategy_id,
                 output_path=self.output_path,
                 progress_callback=self._on_progress,

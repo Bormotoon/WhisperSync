@@ -52,6 +52,10 @@ class BormoSyncConfig:
     # Multicam: name (subfolder) of the camera the synced audio is derived from.
     # None = auto-pick the camera with the strongest alignment.
     audio_source_camera: str | None = None
+    # Multiple recorders (different devices): "best" = one audio lane, each clip
+    # synced from its best-matching recorder; "all" = every recorder on its own
+    # audio lane (-1, -2, …) for multi-mic / multi-speaker setups.
+    recorder_mode: str = "best"
     min_anchors: int = MIN_ANCHORS
     anchor_min_confidence: float = ANCHOR_MIN_CONFIDENCE
     phrase_gap_threshold: float = PHRASE_GAP_THRESHOLD

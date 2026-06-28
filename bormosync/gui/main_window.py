@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
         self._worker = SyncWorker(
             config=self.config,
             video_dir=Path(video_path),
-            audio_file=Path(audio_path),
+            audio_files=[Path(audio_path)],
             strategy_id=strategy_id,
             output_path=output_path,
         )

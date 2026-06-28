@@ -61,7 +61,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--video-dir", required=True, type=Path, help="Path to folder with video files"
     )
     parser.add_argument(
-        "--audio-file", required=True, type=Path, help="Path to recorder audio file"
+        "--audio-file",
+        required=True,
+        type=Path,
+        action="append",
+        dest="audio_files",
+        help="Path to recorder audio file (repeat for multiple recorders)",
+    )
+    parser.add_argument(
+        "--recorder-mode",
+        choices=["best", "all"],
+        default=None,
+        help="Multiple recorders: 'best' = one lane (best per clip), "
+        "'all' = each recorder on its own lane (default: best)",
     )
     parser.add_argument(
         "--strategy",
@@ -111,7 +123,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_dry_run(
     config: BormoSyncConfig,
     video_dir: Path,
-    audio_file: Path,
+    audio_files: list[Path],
     progress_callback: Any = None,
 ) -> Any:
     import os
@@ -136,12 +148,14 @@ def _run_dry_run(
 
         engine = WhisperEngine(config)
 
-        _notify("transcribing_recorder", 0.0, "Transcribing recorder audio...")
-        rec_transcript = engine.transcribe(
-            audio_file, lambda p: _notify("transcribing_recorder", p)
-        )
+        rec_transcripts = []
+        for ri, rp in enumerate(audio_files):
+            _notify("transcribing_recorder", ri / len(audio_files), f"Recorder: {rp.name}")
+            rec_transcripts.append(
+                engine.transcribe(rp, lambda p: _notify("transcribing_recorder", p))
+            )
 
-        # Align each clip independently and return the richest alignment.
+        # Align each clip against each recorder and return the richest alignment.
         best: Any = None
         n = len(video_clips)
         for idx, clip in enumerate(video_clips):
@@ -149,15 +163,16 @@ def _run_dry_run(
             clip_audio = extract_audio_to_wav(clip.path)
             cleanup_paths.append(clip_audio)
             clip_transcript = engine.transcribe(clip_audio)
-            try:
-                am = match_align(clip_transcript, rec_transcript, config)
-            except ValueError:
-                continue
-            if best is None or len(am.anchors) > len(best.anchors):
-                best = am
+            for rec_transcript in rec_transcripts:
+                try:
+                    am = match_align(clip_transcript, rec_transcript, config)
+                except ValueError:
+                    continue
+                if best is None or len(am.anchors) > len(best.anchors):
+                    best = am
 
         if best is None:
-            raise RuntimeError("No camera clip could be aligned to the recorder audio.")
+            raise RuntimeError("No camera clip could be aligned to any recorder audio.")
         _notify("aligning", 1.0, f"Best alignment: {len(best.anchors)} anchors")
         return best
     finally:
@@ -208,9 +223,10 @@ def main() -> None:
     if not args.video_dir.is_dir():
         _print(f"Error: {args.video_dir} is not a directory")
         sys.exit(1)
-    if not args.audio_file.is_file():
-        _print(f"Error: {args.audio_file} is not a file")
-        sys.exit(1)
+    for af in args.audio_files:
+        if not af.is_file():
+            _print(f"Error: {af} is not a file")
+            sys.exit(1)
 
     overrides: dict[str, object] = {}
     if args.model:
@@ -227,6 +243,8 @@ def main() -> None:
         overrides["timebase_source"] = args.timebase_source
     if args.audio_source_camera:
         overrides["audio_source_camera"] = args.audio_source_camera
+    if args.recorder_mode:
+        overrides["recorder_mode"] = args.recorder_mode
 
     if args.no_cache:
         overrides["use_cache"] = False
@@ -236,10 +254,10 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     _print("BormoSync — Starting synchronization")
-    _print(f"  Video dir:  {args.video_dir}")
-    _print(f"  Audio file: {args.audio_file}")
-    _print(f"  Strategy:   {args.strategy}")
-    _print(f"  Output:     {args.output}")
+    _print(f"  Video dir:   {args.video_dir}")
+    _print(f"  Audio files: {', '.join(str(a) for a in args.audio_files)}")
+    _print(f"  Strategy:    {args.strategy}")
+    _print(f"  Output:      {args.output}")
     _print("")
 
     try:
@@ -247,7 +265,7 @@ def main() -> None:
             alignment = _run_dry_run(
                 config=config,
                 video_dir=args.video_dir,
-                audio_file=args.audio_file,
+                audio_files=args.audio_files,
                 progress_callback=_progress_printer,
             )
             if args.json_output:
@@ -266,7 +284,7 @@ def main() -> None:
             result = run_pipeline(
                 config=config,
                 video_dir=args.video_dir,
-                audio_file=args.audio_file,
+                audio_files=args.audio_files,
                 strategy_id=args.strategy,
                 output_path=args.output,
                 progress_callback=_progress_printer,

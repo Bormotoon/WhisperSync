@@ -144,10 +144,14 @@ def _timeline_end(clips: list[MediaClip]) -> float:
     return max((c.offset + c.duration for c in clips), default=0.0)
 
 
+def _anchor_count(am: AlignmentMap | None) -> int:
+    return len(am.anchors) if am is not None else 0
+
+
 def run_pipeline(
     config: BormoSyncConfig,
     video_dir: Path,
-    audio_file: Path,
+    audio_files: list[Path],
     strategy_id: int,
     output_path: Path,
     progress_callback: ProgressCallback | None = None,
@@ -155,6 +159,9 @@ def run_pipeline(
     def _notify(stage: str, progress: float = 0.0, message: str = "") -> None:
         if progress_callback is not None:
             progress_callback(PipelineProgress(stage=stage, progress=progress, message=message))
+
+    if not audio_files:
+        raise ValueError("At least one recorder audio file is required.")
 
     engine: WhisperEngine | None = None
     cleanup_paths: list[Path] = []
@@ -179,16 +186,19 @@ def run_pipeline(
             f"Found {len(video_clips)} clip(s) across {len(cameras)} camera(s): {cam_names}",
         )
 
-        # --- transcribe recorder once ---
+        # --- transcribe every recorder once ---
         engine = WhisperEngine(config)
-        rec_info = probe(audio_file)
-        _notify("transcribing_recorder", 0.0, "Transcribing recorder audio...")
-        rec_transcript = engine.transcribe(
-            audio_file, lambda p: _notify("transcribing_recorder", p)
-        )
+        rec_infos = [probe(p) for p in audio_files]
+        rec_transcripts = []
+        for ri, rp in enumerate(audio_files):
+            _notify("transcribing_recorder", ri / len(audio_files), f"Recorder: {rp.name}")
+            rec_transcripts.append(
+                engine.transcribe(rp, lambda p: _notify("transcribing_recorder", p))
+            )
 
-        # --- transcribe + align each clip independently ---
-        alignments: list[AlignmentMap | None] = []
+        # --- align each clip against each recorder ---
+        # aligns[clip_idx][rec_idx] = AlignmentMap | None
+        aligns: list[list[AlignmentMap | None]] = []
         n = len(video_clips)
         for idx, clip in enumerate(video_clips):
             _notify(
@@ -199,31 +209,41 @@ def run_pipeline(
             clip_audio = extract_audio_to_wav(clip.path)
             cleanup_paths.append(clip_audio)
             clip_transcript = engine.transcribe(clip_audio)
-            try:
-                am = align(clip_transcript, rec_transcript, config)
-            except ValueError as e:
-                logger.warning("Clip %s could not be aligned: %s", clip.path.name, e)
-                warnings.append(f"{clip.path.name}: not aligned ({e})")
-                am = None
-            alignments.append(am)
+            row: list[AlignmentMap | None] = []
+            for rt in rec_transcripts:
+                try:
+                    row.append(align(clip_transcript, rt, config))
+                except ValueError:
+                    row.append(None)
+            if all(a is None for a in row):
+                warnings.append(f"{clip.path.name}: not aligned to any recorder")
+            aligns.append(row)
 
-        if all(a is None for a in alignments):
-            raise RuntimeError("No camera clip could be aligned to the recorder audio.")
+        # --- pick the primary recorder (most total anchors) for placement ---
+        rec_anchor_total = [
+            sum(_anchor_count(aligns[ci][ri]) for ci in range(n)) for ri in range(len(audio_files))
+        ]
+        if max(rec_anchor_total, default=0) == 0:
+            raise RuntimeError("No camera clip could be aligned to any recorder audio.")
+        primary = max(range(len(audio_files)), key=lambda ri: rec_anchor_total[ri])
+        if len(audio_files) > 1:
+            warnings.append(f"Timeline placement uses recorder '{audio_files[primary].name}'")
 
-        # --- place clips on the master timeline from timecodes ---
+        # --- place clips on the master timeline from primary-recorder timecodes ---
         _notify("aligning", 1.0, "Placing clips on timeline...")
+        primary_aligns = [aligns[ci][primary] for ci in range(n)]
         durations = [c.duration for c in video_clips]
-        offsets, unaligned = compute_master_offsets(alignments, durations)
+        offsets, unaligned = compute_master_offsets(primary_aligns, durations)
         for clip, off in zip(video_clips, offsets, strict=True):
             clip.offset = off
         for i in unaligned:
-            warnings.append(f"{video_clips[i].path.name}: placed by order (no anchors)")
+            warnings.append(f"{video_clips[i].path.name}: placed by order (no primary anchors)")
 
         # --- choose which camera the synced audio is derived from ---
         anchors_per_cam: dict[int, int] = {}
-        for ci, am in zip(clip_camera, alignments, strict=True):
-            if am is not None:
-                anchors_per_cam[ci] = anchors_per_cam.get(ci, 0) + len(am.anchors)
+        for ci, row in zip(clip_camera, aligns, strict=True):
+            best_in_row = max((_anchor_count(a) for a in row), default=0)
+            anchors_per_cam[ci] = anchors_per_cam.get(ci, 0) + best_in_row
         if config.audio_source_camera:
             audio_ci = next(
                 (i for i, c in enumerate(cameras) if c.name == config.audio_source_camera),
@@ -234,19 +254,35 @@ def run_pipeline(
         if len(cameras) > 1:
             warnings.append(f"Audio synced from camera '{cameras[audio_ci].name}'")
 
-        # --- plan audio only from the audio-source camera ---
+        # --- plan audio (from the audio-source camera's clips) ---
         _notify("planning", 0.0, "Planning sync strategy...")
         strategy = get_strategy(strategy_id)
         audio_clips: list[MediaClip] = []
         audio_ops: list[dict[str, object]] = []
-        for clip, am, ci in zip(video_clips, alignments, clip_camera, strict=True):
-            if am is None or ci != audio_ci:
-                continue
+
+        def _plan_one(clip: MediaClip, am: AlignmentMap, ri: int, lane: int) -> None:
             cs, ops = strategy.plan_clip(
-                am, audio_file, clip.offset, clip.duration, rec_info.duration, config
+                am, audio_files[ri], clip.offset, clip.duration, rec_infos[ri].duration, config
             )
+            for c in cs:
+                c.lane = lane
             audio_clips.extend(cs)
             audio_ops.extend(ops)
+
+        for ci in range(n):
+            if clip_camera[ci] != audio_ci:
+                continue
+            clip = video_clips[ci]
+            row = aligns[ci]
+            if config.recorder_mode == "all":
+                for ri, am in enumerate(row):
+                    if am is not None:
+                        _plan_one(clip, am, ri, lane=-(ri + 1))
+            else:  # "best": one lane, best recorder per clip
+                candidates = [(ri, am) for ri, am in enumerate(row) if am is not None]
+                if candidates:
+                    best_ri, best_am = max(candidates, key=lambda t: len(t[1].anchors))
+                    _plan_one(clip, best_am, best_ri, lane=-1)
 
         from bormosync.models import SyncPlan
 
@@ -304,8 +340,8 @@ def run_pipeline(
 
         # --- export ---
         _notify("exporting", 0.0, "Generating FCPXML...")
-        if config.timebase_source == "recorder" and rec_info.audio_sample_rate:
-            audio_sr: int | None = rec_info.audio_sample_rate
+        if config.timebase_source == "recorder" and rec_infos[primary].audio_sample_rate:
+            audio_sr: int | None = rec_infos[primary].audio_sample_rate
         else:
             audio_sr = None  # export derives it from the camera
         generate_fcpxml(
@@ -317,20 +353,21 @@ def run_pipeline(
             audio_sample_rate=audio_sr,
         )
 
-        # --- collect quality warnings from the best clip alignment ---
-        best = max(
-            (a for a in alignments if a is not None),
-            key=lambda a: len(a.anchors),
-        )
+        # --- collect quality warnings from the best alignment overall ---
+        all_aligned = [a for row in aligns for a in row if a is not None]
+        best = max(all_aligned, key=lambda a: len(a.anchors))
         if best.residual_ms > 40:
             warnings.append(f"High residual alignment error: {best.residual_ms:.1f} ms")
+
+        # count the best recorder per clip for a representative anchor total
+        anchors_used = sum(max((_anchor_count(a) for a in row), default=0) for row in aligns)
 
         _notify("done", 1.0, "Pipeline complete")
         return SyncResult(
             fcpxml_path=output_path,
             alignment=best,
             plan=plan,
-            anchors_used=sum(len(a.anchors) for a in alignments if a is not None),
+            anchors_used=anchors_used,
             warnings=warnings,
         )
 

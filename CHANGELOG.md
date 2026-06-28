@@ -5,6 +5,13 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Multiple recorders (different devices):** pass several `--audio-file` flags.
+  Each clip is aligned against every recorder; the timeline is placed from the
+  best-covering ("primary") recorder. `recorder_mode` / `--recorder-mode`:
+  `best` (default) syncs each clip from its strongest recorder on one audio lane;
+  `all` places every recorder on its own audio lane (-1, -2, …) for multi-mic /
+  multi-speaker setups. (Chunks of one device should just be concatenated first —
+  same clock, lossless.)
 - **Multi-camera support:** put each camera's clips in its own sub-folder of the
   video directory; each camera is placed on its own lane (1, 2, 3, …) and aligned
   to the recorder independently. The clean audio is synced once from a chosen
