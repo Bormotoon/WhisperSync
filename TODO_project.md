@@ -323,8 +323,8 @@ class SyncResult:
 - **DoD:** `pytest` зелёный; покрыты matcher, стратегии, timestretch, export.
 
 ### Phase 8: Docs & Release
-- [ ] `README.md`: что/зачем, требования (GPU/ffmpeg), установка, использование (GUI + CLI), гайд «какую стратегию когда» (1 — линейный дрейф; 2 — нелинейный; 3 — важна тональность речи и есть паузы), troubleshooting (CUDA/cuDNN/ffmpeg), скриншоты.
-- [ ] `CHANGELOG.md` (Keep a Changelog), версионирование (SemVer), `LICENSE`.
+- [x] `README.md`: что/зачем, требования (GPU/ffmpeg), установка, использование (GUI + CLI), гайд «какую стратегию когда» (1 — линейный дрейф; 2 — нелинейный; 3 — важна тональность речи и есть паузы), troubleshooting (CUDA/cuDNN/ffmpeg), скриншоты.
+- [x] `CHANGELOG.md` (Keep a Changelog), версионирование (SemVer), `LICENSE`.
 - [ ] В приложении — tooltips/подсказки; демо-проект/сэмпл.
 - **DoD:** новый пользователь по README ставит и запускает оба режима без устных пояснений.
 
