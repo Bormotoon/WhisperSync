@@ -12,11 +12,11 @@ from pathlib import Path
 from bormosync.config import BormoSyncConfig
 from bormosync.engine.export import generate_fcpxml
 from bormosync.engine.matcher import align
-from bormosync.engine.media import extract_audio_to_wav, probe
+from bormosync.engine.media import MediaInfo, extract_audio_to_wav, probe
 from bormosync.engine.strategies import get_strategy
 from bormosync.engine.timestretch import apply_atempo, apply_atempo_segment, extract_segment
 from bormosync.engine.transcriber import WhisperEngine
-from bormosync.models import MediaClip, SyncResult
+from bormosync.models import MediaClip, Segment, SyncResult, Transcript, Word
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,96 @@ class PipelineProgress:
 
 
 ProgressCallback = Callable[[PipelineProgress], None]
+
+
+def scan_video_clips(
+    video_dir: Path, config: BormoSyncConfig
+) -> tuple[list[MediaInfo], list[MediaClip]]:
+    """Probe every video in the folder (sorted by name) and lay the clips
+    end-to-end on the camera timeline (offset += previous durations).
+
+    Assumes the camera recorded one continuous take split into files, which is
+    the common auto-split case for DJI Pocket and similar cameras.
+    """
+    exts = tuple(config.video_exts)
+    video_paths = sorted(
+        (p for p in video_dir.iterdir() if p.suffix.lower() in exts),
+        key=lambda p: p.name,
+    )
+    if not video_paths:
+        raise RuntimeError(f"No video files found in {video_dir}")
+
+    video_infos: list[MediaInfo] = []
+    video_clips: list[MediaClip] = []
+    offset = 0.0
+    for path in video_paths:
+        info = probe(path)
+        video_infos.append(info)
+        video_clips.append(
+            MediaClip(
+                path=path,
+                kind="video",
+                offset=offset,
+                in_point=0.0,
+                duration=info.duration,
+                lane=1,
+            )
+        )
+        offset += info.duration
+
+    return video_infos, video_clips
+
+
+def build_camera_transcript(
+    engine: WhisperEngine,
+    video_clips: list[MediaClip],
+    cleanup_paths: list[Path],
+    progress_callback: Callable[[float], None] | None = None,
+) -> Transcript:
+    """Transcribe the scratch audio of *every* camera clip and merge the
+    results into a single transcript on the concatenated camera timeline.
+
+    Each clip's word/segment times are shifted by the clip's timeline offset so
+    anchors map the recorder onto the full multi-clip camera timeline rather
+    than just the first file.
+    """
+    merged: list[Segment] = []
+    total = sum(c.duration for c in video_clips) or 1.0
+    done = 0.0
+    language = "en"
+
+    for clip in video_clips:
+        clip_audio = extract_audio_to_wav(clip.path)
+        cleanup_paths.append(clip_audio)
+        t = engine.transcribe(clip_audio)
+        language = t.language or language
+        shift = clip.offset
+        for seg in t.segments:
+            merged.append(
+                Segment(
+                    start=seg.start + shift,
+                    end=seg.end + shift,
+                    words=[
+                        Word(
+                            text=w.text,
+                            start=w.start + shift,
+                            end=w.end + shift,
+                            probability=w.probability,
+                        )
+                        for w in seg.words
+                    ],
+                )
+            )
+        done += clip.duration
+        if progress_callback:
+            progress_callback(min(done / total, 1.0))
+
+    return Transcript(
+        source_path=video_clips[0].path,
+        language=language,
+        duration=total,
+        segments=merged,
+    )
 
 
 def run_pipeline(
@@ -49,36 +139,8 @@ def run_pipeline(
     try:
         # --- scanning ---
         _notify("scanning", 0.0, "Scanning video directory...")
-        exts = tuple(config.video_exts)
-        video_paths = sorted(
-            [p for p in video_dir.iterdir() if p.suffix.lower() in exts],
-            key=lambda p: p.name,
-        )
-        if not video_paths:
-            raise RuntimeError(f"No video files found in {video_dir}")
-
-        video_infos = []
-        video_clips: list[MediaClip] = []
-        offset = 0.0
-        for path in video_paths:
-            info = probe(path)
-            video_infos.append(info)
-            video_clips.append(
-                MediaClip(
-                    path=path,
-                    kind="video",
-                    offset=offset,
-                    in_point=0.0,
-                    duration=info.duration,
-                    lane=1,
-                )
-            )
-            offset += info.duration
-
-        # --- extracting ---
-        _notify("extracting", 0.0, "Extracting camera audio...")
-        cam_audio = extract_audio_to_wav(video_paths[0])
-        cleanup_paths.append(cam_audio)
+        video_infos, video_clips = scan_video_clips(video_dir, config)
+        _notify("scanning", 1.0, f"Found {len(video_clips)} video clip(s)")
 
         # --- transcribing ---
         engine = WhisperEngine(config)
@@ -89,9 +151,14 @@ def run_pipeline(
 
             return _cb
 
-        _notify("transcribing_camera", 0.0, "Transcribing camera audio...")
-        cam_transcript = engine.transcribe(
-            cam_audio, _make_transcribe_callback("transcribing_camera")
+        # Transcribe the scratch audio of every camera clip, merged onto the
+        # full camera timeline (not just the first file).
+        _notify("transcribing_camera", 0.0, "Transcribing camera audio (all clips)...")
+        cam_transcript = build_camera_transcript(
+            engine,
+            video_clips,
+            cleanup_paths,
+            _make_transcribe_callback("transcribing_camera"),
         )
 
         _notify("transcribing_recorder", 0.0, "Transcribing recorder audio...")

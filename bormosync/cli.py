@@ -106,7 +106,7 @@ def _run_dry_run(
     from contextlib import suppress
 
     from bormosync.engine.matcher import align as match_align
-    from bormosync.engine.media import extract_audio_to_wav
+    from bormosync.engine.pipeline import build_camera_transcript, scan_video_clips
     from bormosync.engine.transcriber import WhisperEngine
 
     def _notify(stage: str, progress: float = 0.0, message: str = "") -> None:
@@ -118,24 +118,15 @@ def _run_dry_run(
 
     try:
         _notify("scanning", 0.0, "Scanning video directory...")
-        exts = tuple(config.video_exts)
-        video_paths = sorted(
-            [p for p in video_dir.iterdir() if p.suffix.lower() in exts],
-            key=lambda p: p.name,
-        )
-        if not video_paths:
-            raise RuntimeError(f"No video files found in {video_dir}")
-        _notify("scanning", 1.0, f"Found {len(video_paths)} video(s)")
-
-        _notify("extracting", 0.0, "Extracting camera audio...")
-        cam_audio = extract_audio_to_wav(video_paths[0])
-        cleanup_paths.append(cam_audio)
-        _notify("extracting", 1.0, "Camera audio extracted")
+        _, video_clips = scan_video_clips(config=config, video_dir=video_dir)
+        _notify("scanning", 1.0, f"Found {len(video_clips)} video clip(s)")
 
         engine = WhisperEngine(config)
 
-        _notify("transcribing_camera", 0.0, "Transcribing camera audio...")
-        cam_transcript = engine.transcribe(cam_audio, lambda p: _notify("transcribing_camera", p))
+        _notify("transcribing_camera", 0.0, "Transcribing camera audio (all clips)...")
+        cam_transcript = build_camera_transcript(
+            engine, video_clips, cleanup_paths, lambda p: _notify("transcribing_camera", p)
+        )
 
         _notify("transcribing_recorder", 0.0, "Transcribing recorder audio...")
         rec_transcript = engine.transcribe(

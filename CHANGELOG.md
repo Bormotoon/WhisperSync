@@ -5,6 +5,11 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Critical:** only the first camera clip was transcribed, so on the real
+  "one long recorder track + many video files" workflow anchors covered just
+  the first clip and drift across the full session was never corrected. The
+  pipeline now transcribes the scratch audio of *every* clip and merges it
+  onto the concatenated camera timeline (word times shifted by clip offset).
 - **Critical:** sync strategies dropped the camera video clips, so exported
   FCPXML contained no video — all three strategies now keep video on lane 1
 - **Critical:** Local Time-Stretch / Silence Padding produced clips whose
