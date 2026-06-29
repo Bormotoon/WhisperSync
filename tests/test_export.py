@@ -93,6 +93,13 @@ def test_generate_and_validate_fcpxml(tmp_path: Path) -> None:
     for c in clips:
         assert c.get("ref") in asset_ids
 
+    # FCPXML 1.9+ DTD: the file reference must live on <media-rep src=...>, never
+    # as a `src` attribute on <asset> (Final Cut rejects the latter on import).
+    for asset in root.findall(".//asset"):
+        assert asset.get("src") is None, "asset must not carry a src attribute"
+        rep = asset.find("media-rep")
+        assert rep is not None and rep.get("src"), "asset needs a <media-rep src=...>"
+
 
 def test_fcpxml_roundtrip_times(tmp_path: Path) -> None:
     video_info = MediaInfo(

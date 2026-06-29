@@ -78,10 +78,12 @@ def generate_fcpxml(
         # Asset duration is expressed on the asset's own timebase: the video
         # frame grid for video, the audio sample rate for audio.
         asset_tb = timebase if is_video else sample_rate
+        # NOTE: in FCPXML 1.9+ the file reference lives on the <media-rep> child,
+        # NOT as a `src` attribute on <asset> (the DTD has no such attribute and
+        # Final Cut rejects it). Keep the asset attributes to the declared set.
         asset_attrs = {
             "id": asset_id,
             "name": clip.path.stem,
-            "src": file_uri,
             "start": "0s",
             "duration": to_rational(clip.duration + clip.in_point, asset_tb),
             "hasVideo": "1" if is_video else "0",
