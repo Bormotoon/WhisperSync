@@ -71,6 +71,9 @@ class BormoSyncConfig:
     cache_dir: str | None = None
     output_dir: str | None = None
     use_cache: bool = True
+    # Save full transcripts (JSON + SRT) of every recorder and camera clip next
+    # to the output, under output/transcripts/.
+    save_transcripts: bool = True
     timebase_source: str = "camera"
     # Multicam: name (subfolder) of the camera the synced audio is derived from.
     # None = auto-pick the camera with the strongest alignment.

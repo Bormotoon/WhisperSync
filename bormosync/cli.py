@@ -89,6 +89,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Crossfade/declick fade length in ms (default: 10)",
     )
     parser.add_argument(
+        "--save-transcripts",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Save full transcripts (JSON + SRT) to output/transcripts/ (default: on)",
+    )
+    parser.add_argument(
         "--strategy",
         choices=[1, 2, 3, 4],
         default=1,
@@ -288,6 +294,8 @@ def main() -> None:
         overrides["crossfade_enabled"] = args.crossfade
     if args.crossfade_ms is not None:
         overrides["crossfade_ms"] = args.crossfade_ms
+    if args.save_transcripts is not None:
+        overrides["save_transcripts"] = args.save_transcripts
 
     if args.no_cache:
         overrides["use_cache"] = False

@@ -83,6 +83,14 @@ class WhisperEngine:
         self._device: str = resolve_device(config.device)
         self._compute_type: str = select_compute_type(self._device, config.compute_type)
 
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def compute_type(self) -> str:
+        return self._compute_type
+
     def _load(self, device: str, compute_type: str) -> Any:
         from faster_whisper import WhisperModel
 

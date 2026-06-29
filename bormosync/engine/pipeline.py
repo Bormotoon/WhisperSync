@@ -23,7 +23,8 @@ from bormosync.engine.naming import natural_key
 from bormosync.engine.strategies import get_strategy
 from bormosync.engine.timestretch import apply_atempo_segment, extract_segment
 from bormosync.engine.transcriber import WhisperEngine
-from bormosync.models import AlignmentMap, MediaClip, SyncResult
+from bormosync.engine.transcript_export import save_transcript
+from bormosync.models import AlignmentMap, MediaClip, SyncResult, Transcript
 
 logger = logging.getLogger(__name__)
 
@@ -317,13 +318,29 @@ def run_pipeline(
 
         # --- transcribe every recorder once ---
         engine = WhisperEngine(config)
+        transcripts_dir = output_path.parent / "transcripts"
+
+        def _save_tx(transcript: Transcript, stem: str, audio_path: Path) -> None:
+            if not config.save_transcripts:
+                return
+            save_transcript(
+                transcript,
+                transcripts_dir,
+                stem,
+                audio_path=audio_path,
+                model=config.model,
+                device=engine.device if engine else config.device,
+                compute_type=engine.compute_type if engine else config.compute_type,
+                mode=config.transcribe_mode,
+            )
+
         rec_infos = [probe(p) for p in audio_files]
         rec_transcripts = []
         for ri, rp in enumerate(audio_files):
             _notify("transcribing_recorder", ri / len(audio_files), f"Recorder: {rp.name}")
-            rec_transcripts.append(
-                engine.transcribe(rp, lambda p: _notify("transcribing_recorder", p))
-            )
+            rt = engine.transcribe(rp, lambda p: _notify("transcribing_recorder", p))
+            rec_transcripts.append(rt)
+            _save_tx(rt, rp.stem, rp)
 
         # --- align each clip against each recorder ---
         # aligns[clip_idx][rec_idx] = AlignmentMap | None
@@ -340,6 +357,9 @@ def run_pipeline(
             clip_audio = extract_audio_to_wav(clip.path)
             cleanup_paths.append(clip_audio)
             clip_transcript = engine.transcribe(clip_audio)
+            cam_name = cameras[clip_camera[idx]].name
+            clip_stem = clip.path.stem if len(cameras) == 1 else f"{cam_name}_{clip.path.stem}"
+            _save_tx(clip_transcript, clip_stem, clip.path)
             row: list[AlignmentMap | None] = []
             for rt in rec_transcripts:
                 try:

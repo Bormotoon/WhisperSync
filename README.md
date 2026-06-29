@@ -156,6 +156,7 @@ python main.py --cli \
 | `--recorder-mode` | str | `best` (одна дорожка, лучший рекордер на клип) или `all` (каждый рекордер на свою дорожку) |
 | `--crossfade` / `--no-crossfade` | flag | Микро-фейды на стыках аудиосегментов (declick), по умолчанию вкл. |
 | `--crossfade-ms` | int | Длина фейда в мс (по умолчанию `10`) |
+| `--save-transcripts` / `--no-save-transcripts` | flag | Сохранять полные транскрипты (JSON+SRT) в `output/transcripts/`, по умолчанию вкл. |
 | `--config` | Path | Путь к JSON-конфигу |
 | `--no-cache` | flag | Отключить кэш транскрипций |
 | `--dry-run` | flag | Только выравнивание, без обработки |
@@ -274,6 +275,7 @@ BormoSync поддерживает JSON-конфигурацию через `--c
     "cache_dir": null,
     "output_dir": null,
     "use_cache": true,
+    "save_transcripts": true,
     "timebase_source": "camera",
     "recorder_mode": "best",
     "crossfade_enabled": true,

@@ -5,6 +5,12 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Full transcript export (JSON + SRT):** the transcription is computed for
+  alignment anyway, so it is now also saved next to the output under
+  `output/transcripts/` — one `.json` + `.srt` per recorder and per camera clip,
+  in the Podcast Reels Forge format (segments with word-level timestamps +
+  sentence groups). Toggle with `save_transcripts` / `--save-transcripts` /
+  `--no-save-transcripts` (default on).
 - **Filename-aware ordering & preliminary layout:** clips are sorted in natural
   order (DJI_9 < DJI_10 < DJI_100) and consecutive runs (DJI_0838, DJI_0839, …)
   are detected. The timeline is now populated from filenames right after scanning
