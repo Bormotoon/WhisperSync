@@ -19,6 +19,7 @@ from bormosync.config import BormoSyncConfig
 from bormosync.engine.export import generate_fcpxml
 from bormosync.engine.matcher import align
 from bormosync.engine.media import MediaInfo, extract_audio_to_wav, probe
+from bormosync.engine.naming import natural_key
 from bormosync.engine.strategies import get_strategy
 from bormosync.engine.timestretch import apply_atempo_segment, extract_segment
 from bormosync.engine.transcriber import WhisperEngine
@@ -118,11 +119,14 @@ def scan_cameras(video_dir: Path, config: BormoSyncConfig) -> list[CameraGroup]:
     exts = tuple(config.video_exts)
 
     def videos_in(d: Path) -> list[Path]:
-        return sorted((p for p in d.iterdir() if p.suffix.lower() in exts), key=lambda p: p.name)
+        return sorted(
+            (p for p in d.iterdir() if p.suffix.lower() in exts),
+            key=lambda p: natural_key(p.name),
+        )
 
     subdirs = sorted(
         (d for d in video_dir.iterdir() if d.is_dir() and videos_in(d)),
-        key=lambda d: d.name,
+        key=lambda d: natural_key(d.name),
     )
     sources: list[tuple[str, list[Path]]]
     if subdirs:
@@ -203,6 +207,47 @@ def compute_master_offsets(
     return offsets, unaligned
 
 
+def preliminary_offsets(video_clips: list[MediaClip], clip_camera: list[int]) -> list[float]:
+    """Rough timeline positions before alignment: lay each camera's clips
+    end-to-end in (natural) name order. Used only to populate the GUI timeline
+    while transcription runs; real positions come from matched timecodes."""
+    running: dict[int, float] = {}
+    offsets: list[float] = []
+    for clip, cam in zip(video_clips, clip_camera, strict=True):
+        start = running.get(cam, 0.0)
+        offsets.append(start)
+        running[cam] = start + clip.duration
+    return offsets
+
+
+def sequence_order_warnings(
+    video_clips: list[MediaClip],
+    clip_camera: list[int],
+    aligned: list[bool],
+) -> list[str]:
+    """Flag clips whose matched timeline order contradicts their filename order
+    within a camera — a strong hint of a bad alignment for that clip."""
+    warnings: list[str] = []
+    by_cam: dict[int, list[int]] = {}
+    for i, cam in enumerate(clip_camera):
+        by_cam.setdefault(cam, []).append(i)
+    for indices in by_cam.values():
+        prev_off: float | None = None
+        prev_name = ""
+        for i in indices:  # indices are already in natural name order
+            if not aligned[i]:
+                continue
+            off = video_clips[i].offset
+            if prev_off is not None and off < prev_off - 1e-6:
+                warnings.append(
+                    f"{video_clips[i].path.name}: placed before {prev_name} despite later "
+                    "filename — possible misalignment"
+                )
+            prev_off = off
+            prev_name = video_clips[i].path.name
+    return warnings
+
+
 def _timeline_end(clips: list[MediaClip]) -> float:
     return max((c.offset + c.duration for c in clips), default=0.0)
 
@@ -256,6 +301,20 @@ def run_pipeline(
             f"Found {len(video_clips)} clip(s) across {len(cameras)} camera(s): {cam_names}",
         )
 
+        # Preliminary layout from filenames so the timeline is populated while
+        # transcription runs; real positions replace it after alignment.
+        video_status = ["pending"] * len(video_clips)
+        prelim = preliminary_offsets(video_clips, clip_camera)
+        for clip, off in zip(video_clips, prelim, strict=True):
+            clip.offset = off
+
+        def _video_snapshot() -> list[dict[str, Any]]:
+            return make_timeline_entries(
+                cameras, clip_camera, video_clips, video_status, [], [], [], []
+            )
+
+        _notify("scanning", 1.0, "Preliminary layout", clips=_video_snapshot())
+
         # --- transcribe every recorder once ---
         engine = WhisperEngine(config)
         rec_infos = [probe(p) for p in audio_files]
@@ -271,10 +330,12 @@ def run_pipeline(
         aligns: list[list[AlignmentMap | None]] = []
         n = len(video_clips)
         for idx, clip in enumerate(video_clips):
+            video_status[idx] = "working"
             _notify(
                 "transcribing_camera",
                 idx / max(n, 1),
                 f"Transcribing camera clip {idx + 1}/{n}: {clip.path.name}",
+                clips=_video_snapshot(),
             )
             clip_audio = extract_audio_to_wav(clip.path)
             cleanup_paths.append(clip_audio)
@@ -285,6 +346,7 @@ def run_pipeline(
                     row.append(align(clip_transcript, rt, config))
                 except ValueError:
                     row.append(None)
+            video_status[idx] = "pending"
             if all(a is None for a in row):
                 warnings.append(f"{clip.path.name}: not aligned to any recorder")
             aligns.append(row)
@@ -309,6 +371,11 @@ def run_pipeline(
         for i in unaligned:
             warnings.append(f"{video_clips[i].path.name}: placed by order (no primary anchors)")
 
+        aligned_primary = [primary_aligns[i] is not None for i in range(n)]
+        for i in range(n):
+            video_status[i] = "done" if aligned_primary[i] else "pending"
+        warnings.extend(sequence_order_warnings(video_clips, clip_camera, aligned_primary))
+
         # --- choose which camera the synced audio is derived from ---
         anchors_per_cam: dict[int, int] = {}
         for ci, row in zip(clip_camera, aligns, strict=True):
@@ -331,8 +398,6 @@ def run_pipeline(
         audio_ops: list[dict[str, Any]] = []
         audio_speed: list[float] = []
         audio_track: list[str] = []
-        # All camera clips are already placed; mark them done on the timeline.
-        video_status = ["done"] * len(video_clips)
 
         def _plan_one(clip: MediaClip, am: AlignmentMap, ri: int, lane: int) -> None:
             cs, ops = strategy.plan_clip(

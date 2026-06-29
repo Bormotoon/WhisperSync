@@ -5,6 +5,13 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Filename-aware ordering & preliminary layout:** clips are sorted in natural
+  order (DJI_9 < DJI_10 < DJI_100) and consecutive runs (DJI_0838, DJI_0839, …)
+  are detected. The timeline is now populated from filenames right after scanning
+  (clips laid end-to-end per camera) and the current clip is highlighted while it
+  transcribes, so progress is visible before alignment finishes. Clips that fail
+  alignment fall back to their filename order, and a warning is raised if matched
+  timecodes contradict the filename order (likely misalignment).
 - **Full multi-track timeline in the GUI:** one row per camera and per audio
   lane, showing each clip's real position (how far it moved), the applied speed
   change (e.g. `+0.10%`), and live sync status — pending (dashed/dim), working

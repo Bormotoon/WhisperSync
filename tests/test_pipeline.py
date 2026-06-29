@@ -167,3 +167,33 @@ def test_timeline_entries_separate_audio_lanes() -> None:
     audio = [e for e in entries if e["kind"] == "audio"]
     rows = sorted(e["row"] for e in audio)
     assert rows == [1, 2]  # two distinct audio rows below the single camera
+
+
+def test_preliminary_offsets_end_to_end_per_camera() -> None:
+    from bormosync.engine.pipeline import preliminary_offsets
+
+    clips = [
+        _vclip("a1", 0.0, 10.0, 1),
+        _vclip("a2", 0.0, 8.0, 1),
+        _vclip("b1", 0.0, 5.0, 2),
+    ]
+    clip_camera = [0, 0, 1]
+    offs = preliminary_offsets(clips, clip_camera)
+    # camera 0: 0, 10; camera 1 restarts at 0
+    assert offs == [0.0, 10.0, 0.0]
+
+
+def test_sequence_order_warning_on_disordered_offsets() -> None:
+    from bormosync.engine.pipeline import sequence_order_warnings
+
+    # natural order a1,a2 but a2 placed BEFORE a1 -> warn
+    clips = [_vclip("a1", 50.0, 10.0, 1), _vclip("a2", 5.0, 10.0, 1)]
+    warns = sequence_order_warnings(clips, [0, 0], [True, True])
+    assert len(warns) == 1 and "a2" in warns[0]
+
+
+def test_sequence_order_no_warning_when_consistent() -> None:
+    from bormosync.engine.pipeline import sequence_order_warnings
+
+    clips = [_vclip("a1", 0.0, 10.0, 1), _vclip("a2", 12.0, 10.0, 1)]
+    assert sequence_order_warnings(clips, [0, 0], [True, True]) == []
