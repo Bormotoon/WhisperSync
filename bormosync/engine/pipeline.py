@@ -13,6 +13,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from bormosync.config import BormoSyncConfig
 from bormosync.engine.export import generate_fcpxml
@@ -31,9 +32,71 @@ class PipelineProgress:
     stage: str
     progress: float = 0.0
     message: str = ""
+    # Optional timeline snapshot (list of clip dicts) for the GUI timeline view.
+    clips: list[dict[str, Any]] | None = None
 
 
 ProgressCallback = Callable[[PipelineProgress], None]
+
+
+def make_timeline_entries(
+    cameras: list[CameraGroup],
+    clip_camera: list[int],
+    video_clips: list[MediaClip],
+    video_status: list[str],
+    audio_clips: list[MediaClip],
+    audio_speed: list[float],
+    audio_track: list[str],
+    audio_status: list[str],
+) -> list[dict[str, Any]]:
+    """Build a flat list of timeline clip dicts for the GUI.
+
+    Video clips occupy one row per camera (row = camera index); audio lanes are
+    stacked below in first-seen order. ``speed`` is the playback rate applied to
+    the recorder audio (1.0 = untouched); ``status`` is pending/working/done.
+    """
+    entries: list[dict[str, Any]] = []
+    for clip, ci, status in zip(video_clips, clip_camera, video_status, strict=True):
+        entries.append(
+            {
+                "track": cameras[ci].name,
+                "row": ci,
+                "kind": "video",
+                "lane": clip.lane,
+                "offset": clip.offset,
+                "duration": clip.duration,
+                "in_point": clip.in_point,
+                "speed": 1.0,
+                "status": status,
+                "name": clip.path.stem,
+            }
+        )
+
+    audio_rows: dict[str, int] = {}
+    next_row = len(cameras)
+    for label in audio_track:
+        if label not in audio_rows:
+            audio_rows[label] = next_row
+            next_row += 1
+
+    for clip, speed, label, status in zip(
+        audio_clips, audio_speed, audio_track, audio_status, strict=True
+    ):
+        entries.append(
+            {
+                "track": label,
+                "row": audio_rows[label],
+                "kind": "audio",
+                "lane": clip.lane,
+                "offset": clip.offset,
+                "duration": clip.duration,
+                "in_point": clip.in_point,
+                "speed": speed,
+                "status": status,
+                "name": clip.path.stem,
+            }
+        )
+    return entries
 
 
 @dataclass
@@ -156,9 +219,16 @@ def run_pipeline(
     output_path: Path,
     progress_callback: ProgressCallback | None = None,
 ) -> SyncResult:
-    def _notify(stage: str, progress: float = 0.0, message: str = "") -> None:
+    def _notify(
+        stage: str,
+        progress: float = 0.0,
+        message: str = "",
+        clips: list[dict[str, Any]] | None = None,
+    ) -> None:
         if progress_callback is not None:
-            progress_callback(PipelineProgress(stage=stage, progress=progress, message=message))
+            progress_callback(
+                PipelineProgress(stage=stage, progress=progress, message=message, clips=clips)
+            )
 
     if not audio_files:
         raise ValueError("At least one recorder audio file is required.")
@@ -258,16 +328,26 @@ def run_pipeline(
         _notify("planning", 0.0, "Planning sync strategy...")
         strategy = get_strategy(strategy_id)
         audio_clips: list[MediaClip] = []
-        audio_ops: list[dict[str, object]] = []
+        audio_ops: list[dict[str, Any]] = []
+        audio_speed: list[float] = []
+        audio_track: list[str] = []
+        # All camera clips are already placed; mark them done on the timeline.
+        video_status = ["done"] * len(video_clips)
 
         def _plan_one(clip: MediaClip, am: AlignmentMap, ri: int, lane: int) -> None:
             cs, ops = strategy.plan_clip(
                 am, audio_files[ri], clip.offset, clip.duration, rec_infos[ri].duration, config
             )
-            for c in cs:
+            label = f"Audio: {audio_files[ri].stem}" if config.recorder_mode == "all" else "Audio"
+            for c, op in zip(cs, ops, strict=True):
                 c.lane = lane
-            audio_clips.extend(cs)
-            audio_ops.extend(ops)
+                audio_clips.append(c)
+                audio_ops.append(op)
+                factor_val = op.get("factor", 1.0)
+                audio_speed.append(
+                    float(factor_val) if isinstance(factor_val, (int, float)) else 1.0
+                )
+                audio_track.append(label)
 
         for ci in range(n):
             if clip_camera[ci] != audio_ci:
@@ -283,6 +363,23 @@ def run_pipeline(
                 if candidates:
                     best_ri, best_am = max(candidates, key=lambda t: len(t[1].anchors))
                     _plan_one(clip, best_am, best_ri, lane=-1)
+
+        audio_status = ["pending"] * len(audio_clips)
+
+        def _timeline_snapshot() -> list[dict[str, Any]]:
+            return make_timeline_entries(
+                cameras,
+                clip_camera,
+                video_clips,
+                video_status,
+                audio_clips,
+                audio_speed,
+                audio_track,
+                audio_status,
+            )
+
+        # Show the full planned layout (video placed, audio pending) up front.
+        _notify("planning", 1.0, "Timeline planned", clips=_timeline_snapshot())
 
         from bormosync.models import SyncPlan
 
@@ -314,6 +411,8 @@ def run_pipeline(
 
         for i, op in enumerate(plan.audio_ops):
             op_type = op["type"]
+            if i < len(audio_status):
+                audio_status[i] = "working"
             if op_type == "atempo_segment":
                 out = apply_atempo_segment(
                     Path(str(op["input"])),
@@ -339,7 +438,11 @@ def run_pipeline(
                 seg_index += 1
             else:
                 logger.warning("Unknown audio op type '%s' — skipping", op_type)
-            _notify("processing", (i + 1) / n_ops)
+            if i < len(audio_status):
+                audio_status[i] = "done"
+            _notify(
+                "processing", (i + 1) / n_ops, f"Synced {i + 1}/{n_ops}", clips=_timeline_snapshot()
+            )
 
         # --- export ---
         _notify("exporting", 0.0, "Generating FCPXML...")

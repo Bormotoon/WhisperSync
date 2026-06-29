@@ -12,6 +12,7 @@ class SyncWorker(QObject):
     progress = pyqtSignal(int)
     stage = pyqtSignal(str)
     log = pyqtSignal(str)
+    timeline = pyqtSignal(object)  # list[dict] timeline snapshot
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
@@ -38,6 +39,8 @@ class SyncWorker(QObject):
         self.progress.emit(int(p.progress * 100))
         if p.message:
             self.log.emit(p.message)
+        if p.clips is not None:
+            self.timeline.emit(p.clips)
 
     @pyqtSlot()
     def run(self) -> None:

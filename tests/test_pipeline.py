@@ -7,8 +7,13 @@ from pathlib import Path
 import pytest
 
 from bormosync.config import BormoSyncConfig
-from bormosync.engine.pipeline import compute_master_offsets, scan_cameras
-from bormosync.models import AlignmentMap
+from bormosync.engine.pipeline import (
+    CameraGroup,
+    compute_master_offsets,
+    make_timeline_entries,
+    scan_cameras,
+)
+from bormosync.models import AlignmentMap, MediaClip
 
 
 def _align(rec_start: float, k: float = 1.0) -> AlignmentMap:
@@ -98,3 +103,67 @@ def test_scan_cameras_empty_dir_raises(tmp_path, monkeypatch) -> None:  # noqa: 
     monkeypatch.setattr("bormosync.engine.pipeline.probe", _fake_probe)
     with pytest.raises(RuntimeError):
         scan_cameras(tmp_path, BormoSyncConfig())
+
+
+def _vclip(name: str, offset: float, dur: float, lane: int) -> MediaClip:
+    return MediaClip(Path(f"{name}.mp4"), "video", offset, 0.0, dur, lane)
+
+
+def _aclip(name: str, offset: float, dur: float, lane: int) -> MediaClip:
+    return MediaClip(Path(f"{name}.wav"), "audio", offset, 0.0, dur, lane)
+
+
+def test_timeline_entries_rows_speed_status() -> None:
+    cameras = [
+        CameraGroup("camA", 1, [], []),
+        CameraGroup("camB", 2, [], []),
+    ]
+    video_clips = [_vclip("a1", 0.0, 10.0, 1), _vclip("b1", 0.0, 8.0, 2)]
+    clip_camera = [0, 1]
+    video_status = ["done", "done"]
+    audio_clips = [_aclip("seg0", 0.0, 5.0, -1), _aclip("seg1", 5.0, 5.0, -1)]
+    audio_speed = [0.999, 1.0]
+    audio_track = ["Audio", "Audio"]
+    audio_status = ["done", "working"]
+
+    entries = make_timeline_entries(
+        cameras,
+        clip_camera,
+        video_clips,
+        video_status,
+        audio_clips,
+        audio_speed,
+        audio_track,
+        audio_status,
+    )
+
+    assert len(entries) == 4
+    by_track = {e["track"]: e for e in entries if e["kind"] == "video"}
+    assert by_track["camA"]["row"] == 0
+    assert by_track["camB"]["row"] == 1
+    assert all(e["speed"] == 1.0 for e in entries if e["kind"] == "video")
+
+    audio = [e for e in entries if e["kind"] == "audio"]
+    # audio rows stacked below the two cameras
+    assert all(e["row"] == 2 for e in audio)
+    assert audio[0]["speed"] == 0.999
+    assert audio[1]["status"] == "working"
+
+
+def test_timeline_entries_separate_audio_lanes() -> None:
+    cameras = [CameraGroup("camera", 1, [], [])]
+    video_clips = [_vclip("v", 0.0, 10.0, 1)]
+    audio_clips = [_aclip("m1", 0.0, 10.0, -1), _aclip("m2", 0.0, 10.0, -2)]
+    entries = make_timeline_entries(
+        cameras,
+        [0],
+        video_clips,
+        ["done"],
+        audio_clips,
+        [1.0, 1.0],
+        ["Audio: micA", "Audio: micB"],
+        ["done", "done"],
+    )
+    audio = [e for e in entries if e["kind"] == "audio"]
+    rows = sorted(e["row"] for e in audio)
+    assert rows == [1, 2]  # two distinct audio rows below the single camera

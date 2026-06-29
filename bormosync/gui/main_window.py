@@ -140,10 +140,12 @@ class MainWindow(QMainWindow):
         self.strategy_diagram.setMaximumHeight(120)
         right_layout.addWidget(self.strategy_diagram)
 
+        timeline_group = QGroupBox("Timeline")
+        timeline_layout = QVBoxLayout(timeline_group)
         self.timeline_preview = TimelinePreview()
-        self.timeline_preview.setMinimumHeight(100)
-        self.timeline_preview.setMaximumHeight(140)
-        right_layout.addWidget(self.timeline_preview)
+        self.timeline_preview.setMinimumHeight(180)
+        timeline_layout.addWidget(self.timeline_preview)
+        right_layout.addWidget(timeline_group, stretch=1)
 
         progress_group = QGroupBox("Progress")
         progress_layout = QVBoxLayout(progress_group)
@@ -262,6 +264,7 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self._on_progress)
         self._worker.stage.connect(self._on_stage)
         self._worker.log.connect(lambda msg: self.log_view.append_log(msg))
+        self._worker.timeline.connect(self.timeline_preview.set_tracks)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._thread.quit)
@@ -298,18 +301,7 @@ class MainWindow(QMainWindow):
             )
             self.btn_open_folder.setEnabled(True)
             self._output_path = result.fcpxml_path.parent
-
-            clips_data = []
-            for c in result.plan.clips:
-                clips_data.append(
-                    {
-                        "offset": c.offset,
-                        "duration": c.duration,
-                        "lane": c.lane,
-                        "name": c.path.stem,
-                    }
-                )
-            self.timeline_preview.set_clips(clips_data)
+            # The timeline is kept live via the worker's `timeline` signal.
 
         self.log_view.append_log("Sync complete!", "INFO")
         self.status_bar.showMessage("Sync complete!")

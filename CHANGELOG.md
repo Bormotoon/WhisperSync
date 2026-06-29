@@ -5,6 +5,12 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Full multi-track timeline in the GUI:** one row per camera and per audio
+  lane, showing each clip's real position (how far it moved), the applied speed
+  change (e.g. `+0.10%`), and live sync status — pending (dashed/dim), working
+  (orange outline), done (solid). Updates live as clips are processed; hover a
+  clip for offset / duration / in-point / speed / status. Driven by per-clip
+  timeline snapshots emitted from the pipeline (`PipelineProgress.clips`).
 - **Toggleable seam crossfades:** short equal-power fades at audio segment
   joints declick the seams produced by the Local Time-Stretch strategy. They
   are length-preserving (no extra drift) and can be turned off via the GUI
