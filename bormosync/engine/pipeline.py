@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,11 @@ from bormosync.engine.matcher import align
 from bormosync.engine.media import MediaInfo, extract_audio_to_wav, probe
 from bormosync.engine.naming import natural_key
 from bormosync.engine.strategies import get_strategy
-from bormosync.engine.timestretch import apply_atempo_segment, extract_segment
+from bormosync.engine.timestretch import (
+    apply_atempo_segment,
+    assemble_clip,
+    extract_segment,
+)
 from bormosync.engine.transcriber import WhisperEngine
 from bormosync.engine.transcript_export import save_transcript
 from bormosync.models import AlignmentMap, MediaClip, SyncResult, Transcript
@@ -411,43 +416,80 @@ def run_pipeline(
         if len(cameras) > 1:
             warnings.append(f"Audio synced from camera '{cameras[audio_ci].name}'")
 
-        # --- plan audio (from the audio-source camera's clips) ---
+        # --- plan + render synced audio (one WAV per audio-source video clip) ---
+        # Video files are referenced untouched. For each one we render a single
+        # recorder-audio WAV of identical length, with speech placed at its synced
+        # position and silence filling the gaps — so the FCPXML carries ~2 clips
+        # per video instead of thousands of segment clips.
         _notify("planning", 0.0, "Planning sync strategy...")
         strategy = get_strategy(strategy_id)
+        audio_synced_dir = output_path.parent / "audio_synced"
+        audio_synced_dir.mkdir(parents=True, exist_ok=True)
+
+        out_sr: int
+        if config.timebase_source == "recorder" and rec_infos[primary].audio_sample_rate:
+            out_sr = int(rec_infos[primary].audio_sample_rate or 48000)
+        elif video_infos and video_infos[0].audio_sample_rate:
+            out_sr = int(video_infos[0].audio_sample_rate or 48000)
+        else:
+            out_sr = 48000
+
         audio_clips: list[MediaClip] = []
-        audio_ops: list[dict[str, Any]] = []
         audio_speed: list[float] = []
         audio_track: list[str] = []
+        # (audio_clip_index, recorder_path, segments, clip_duration)
+        render_jobs: list[tuple[int, Path, list[dict[str, float]], float]] = []
 
-        def _plan_one(clip: MediaClip, am: AlignmentMap, ri: int, lane: int) -> None:
+        def _segments_for(vclip: MediaClip, am: AlignmentMap, ri: int) -> list[dict[str, float]]:
             cs, ops = strategy.plan_clip(
-                am, audio_files[ri], clip.offset, clip.duration, rec_infos[ri].duration, config
+                am, audio_files[ri], vclip.offset, vclip.duration, rec_infos[ri].duration, config
             )
-            label = f"Audio: {audio_files[ri].stem}" if config.recorder_mode == "all" else "Audio"
+            segs: list[dict[str, float]] = []
             for c, op in zip(cs, ops, strict=True):
-                c.lane = lane
-                audio_clips.append(c)
-                audio_ops.append(op)
-                factor_val = op.get("factor", 1.0)
-                audio_speed.append(
-                    float(factor_val) if isinstance(factor_val, (int, float)) else 1.0
+                factor = float(op["factor"]) if op["type"] == "atempo_segment" else 1.0
+                segs.append(
+                    {
+                        "rec_start": float(op["start"]),
+                        "rec_dur": float(op["duration"]),
+                        "factor": factor,
+                        "local_start": max(0.0, c.offset - vclip.offset),
+                    }
                 )
-                audio_track.append(label)
+            return segs
+
+        def _add_job(vclip: MediaClip, am: AlignmentMap, ri: int, lane: int) -> None:
+            segs = _segments_for(vclip, am, ri)
+            if not segs:
+                return
+            label = f"Audio: {audio_files[ri].stem}" if config.recorder_mode == "all" else "Audio"
+            audio_clips.append(
+                MediaClip(
+                    path=audio_files[ri],
+                    kind="audio",
+                    offset=vclip.offset,
+                    in_point=0.0,
+                    duration=vclip.duration,
+                    lane=lane,
+                )
+            )
+            audio_speed.append(1.0 / am.k if am.k else 1.0)
+            audio_track.append(label)
+            render_jobs.append((len(audio_clips) - 1, audio_files[ri], segs, vclip.duration))
 
         for ci in range(n):
             if clip_camera[ci] != audio_ci:
                 continue
-            clip = video_clips[ci]
+            vclip = video_clips[ci]
             row = aligns[ci]
             if config.recorder_mode == "all":
                 for ri, am in enumerate(row):
                     if am is not None:
-                        _plan_one(clip, am, ri, lane=-(ri + 1))
-            else:  # "best": one lane, best recorder per clip
+                        _add_job(vclip, am, ri, lane=-(ri + 1))
+            else:  # "best": one lane, strongest recorder per clip
                 candidates = [(ri, am) for ri, am in enumerate(row) if am is not None]
                 if candidates:
                     best_ri, best_am = max(candidates, key=lambda t: len(t[1].anchors))
-                    _plan_one(clip, best_am, best_ri, lane=-1)
+                    _add_job(vclip, best_am, best_ri, lane=-1)
 
         audio_status = ["pending"] * len(audio_clips)
 
@@ -472,76 +514,63 @@ def run_pipeline(
         plan = SyncPlan(
             strategy_id=strategy_id,
             clips=all_clips,
-            audio_ops=audio_ops,
+            audio_ops=[],
             total_duration=_timeline_end(all_clips),
         )
         _notify("planning", 1.0, f"Strategy {strategy_id}: {strategy.name}")
 
-        # --- process audio operations ---
-        _notify("processing", 0.0, "Processing audio operations...")
-        audio_synced_dir = output_path.parent / "audio_synced"
-        audio_synced_dir.mkdir(parents=True, exist_ok=True)
-
-        audio_idx = 0
-        seg_index = 0
-        n_ops = max(len(plan.audio_ops), 1)
+        # --- render one synced WAV per clip ---
+        _notify("processing", 0.0, "Rendering synced audio...")
         fade_ms = config.crossfade_ms if config.crossfade_enabled else 0
-
-        def _assign(out_path: Path) -> None:
-            nonlocal audio_idx
-            if audio_idx < len(audio_clips):
-                audio_clips[audio_idx].path = out_path
-                audio_clips[audio_idx].in_point = 0.0
-                audio_idx += 1
-
-        for i, op in enumerate(plan.audio_ops):
-            op_type = op["type"]
-            if i < len(audio_status):
-                audio_status[i] = "working"
-            if op_type == "atempo_segment":
-                out = apply_atempo_segment(
-                    Path(str(op["input"])),
-                    audio_synced_dir,
-                    float(op["start"]),
-                    float(op["duration"]),
-                    float(op["factor"]),
-                    seg_index,
-                    fade_ms=fade_ms,
-                )
-                _assign(out)
-                seg_index += 1
-            elif op_type == "extract":
-                out = extract_segment(
-                    Path(str(op["input"])),
-                    audio_synced_dir,
-                    float(op["start"]),
-                    float(op["duration"]),
-                    seg_index,
-                    fade_ms=fade_ms,
-                )
-                _assign(out)
-                seg_index += 1
-            else:
-                logger.warning("Unknown audio op type '%s' — skipping", op_type)
-            if i < len(audio_status):
-                audio_status[i] = "done"
+        n_jobs = max(len(render_jobs), 1)
+        for j, (clip_idx, rec_path, segs, dur) in enumerate(render_jobs):
+            audio_status[clip_idx] = "working"
             _notify(
-                "processing", (i + 1) / n_ops, f"Synced {i + 1}/{n_ops}", clips=_timeline_snapshot()
+                "processing",
+                j / n_jobs,
+                f"Rendering synced audio {j + 1}/{n_jobs}",
+                clips=_timeline_snapshot(),
+            )
+            with tempfile.TemporaryDirectory(prefix="bormosync_seg_") as td:
+                tdp = Path(td)
+                placements: list[tuple[Path, float]] = []
+                for k, seg in enumerate(segs):
+                    if abs(seg["factor"] - 1.0) > 1e-6:
+                        sp = apply_atempo_segment(
+                            rec_path,
+                            tdp,
+                            seg["rec_start"],
+                            seg["rec_dur"],
+                            seg["factor"],
+                            k,
+                            fade_ms=fade_ms,
+                        )
+                    else:
+                        sp = extract_segment(
+                            rec_path, tdp, seg["rec_start"], seg["rec_dur"], k, fade_ms=fade_ms
+                        )
+                    placements.append((sp, seg["local_start"]))
+                out = audio_synced_dir / f"synced_{clip_idx:03d}.wav"
+                assemble_clip(placements, dur, out_sr, out)
+            audio_clips[clip_idx].path = out
+            audio_clips[clip_idx].in_point = 0.0
+            audio_status[clip_idx] = "done"
+            _notify(
+                "processing",
+                (j + 1) / n_jobs,
+                f"Rendered {j + 1}/{n_jobs}",
+                clips=_timeline_snapshot(),
             )
 
         # --- export ---
         _notify("exporting", 0.0, "Generating FCPXML...")
-        if config.timebase_source == "recorder" and rec_infos[primary].audio_sample_rate:
-            audio_sr: int | None = rec_infos[primary].audio_sample_rate
-        else:
-            audio_sr = None  # export derives it from the camera
         generate_fcpxml(
             plan,
             video_infos,
             output_path,
             config.fcpxml_version,
             output_path.stem,
-            audio_sample_rate=audio_sr,
+            audio_sample_rate=out_sr,  # matches the rendered synced WAVs
         )
 
         # --- collect quality warnings from the best alignment overall ---

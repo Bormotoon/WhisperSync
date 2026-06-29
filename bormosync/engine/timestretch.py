@@ -144,6 +144,69 @@ def generate_silence(
     return output_path
 
 
+def assemble_clip(
+    placements: list[tuple[Path, float]],
+    total_duration: float,
+    sample_rate: int,
+    output_path: Path,
+) -> Path:
+    """Mix pre-cut speech segments onto a silent bed of ``total_duration`` so the
+    result is a single WAV exactly as long as the source video clip.
+
+    ``placements`` is a list of ``(segment_wav, local_start_seconds)``; each
+    segment is delayed to its position and summed (segments do not overlap, so a
+    plain sum reproduces them with silence in the gaps). One ffmpeg call.
+    """
+    if not placements:
+        return generate_silence(output_path, total_duration, sample_rate)
+
+    inputs: list[str] = [
+        "-f",
+        "lavfi",
+        "-t",
+        f"{total_duration:.6f}",
+        "-i",
+        f"anullsrc=r={sample_rate}:cl=mono",  # input 0: silent bed
+    ]
+    for seg_path, _local in placements:
+        inputs += ["-i", str(seg_path)]
+
+    parts: list[str] = []
+    labels = ["[0:a]"]  # the bed
+    for i, (_seg_path, local) in enumerate(placements):
+        delay_ms = max(0, round(local * 1000))
+        parts.append(f"[{i + 1}:a]adelay={delay_ms}:all=1[s{i}]")
+        labels.append(f"[s{i}]")
+    n_mix = len(labels)
+    parts.append(
+        f"{''.join(labels)}amix=inputs={n_mix}:normalize=0:duration=first[mx];"
+        f"[mx]atrim=0:{total_duration:.6f},asetpts=PTS-STARTPTS[out]"
+    )
+    filter_complex = ";".join(parts)
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        *inputs,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[out]",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-acodec",
+        "pcm_s16le",
+        str(output_path),
+    ]
+    logger.info("Assembling synced clip (%d segments) → %s", len(placements), output_path)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg clip assembly failed: {result.stderr[-800:]}")
+    return output_path
+
+
 def concatenate_segments(segment_paths: list[Path], output_path: Path) -> Path:
     fd, list_path = tempfile.mkstemp(suffix=".txt", prefix="filelist_")
     try:

@@ -130,3 +130,42 @@ def test_fcpxml_roundtrip_times(tmp_path: Path) -> None:
     tree = ET.parse(out)
     clips = tree.findall(".//asset-clip")
     assert len(clips) == 2
+
+
+def test_spine_times_are_frame_aligned(tmp_path: Path) -> None:
+    """FCP rejects spine offsets/durations that are not on a frame boundary, and
+    warns about a custom format name. Both must be avoided."""
+    video_info = MediaInfo(
+        path=Path("/v/DJI_0829.mp4"),
+        duration=60.04,
+        fps=Fraction(30000, 1001),  # 29.97 fps -> one frame = 1001/30000 s
+        width=1920,
+        height=1080,
+        video_codec="h264",
+        audio_codec="aac",
+        audio_channels=2,
+        audio_sample_rate=48000,
+    )
+    # deliberately non-frame-aligned offsets/durations
+    plan = SyncPlan(
+        strategy_id=1,
+        clips=[
+            MediaClip(Path("/v/DJI_0829.mp4"), "video", 2.9106329, 0.0, 60.04, 1),
+            MediaClip(Path("/a/synced_000.wav"), "audio", 2.9106329, 0.0, 60.04, -1),
+        ],
+        audio_ops=[],
+        total_duration=62.95,
+    )
+    out = tmp_path / "fa.fcpxml"
+    generate_fcpxml(plan, [video_info], out, audio_sample_rate=48000)
+
+    root = ET.parse(out).getroot()
+
+    fmt = root.find(".//format")
+    assert fmt is not None and "name" not in fmt.attrib  # custom name -> FCP warns
+
+    for ac in root.findall(".//asset-clip"):
+        for attr in ("offset", "duration", "start"):
+            ticks_s, den_s = ac.get(attr, "0/30000s")[:-1].split("/")
+            assert int(den_s) == 30000
+            assert int(ticks_s) % 1001 == 0, f"{attr} not on a frame boundary: {ac.get(attr)}"

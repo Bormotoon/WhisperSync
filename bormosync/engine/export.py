@@ -22,6 +22,25 @@ def fps_to_frame_duration(fps: Fraction) -> str:
     return f"{fps.denominator}/{fps.numerator}s"
 
 
+def _frame_rational(seconds: float, fps: Fraction, mode: str = "round") -> str:
+    """Express ``seconds`` on the sequence timebase, snapped to a whole frame.
+
+    Final Cut requires spine offsets/durations to land on an edit-frame boundary
+    (a multiple of the frame duration), otherwise it warns and re-quantises. We
+    round offsets, floor clip durations (never claim more media than exists) and
+    ceil the sequence/gap duration (so it covers every clip).
+    """
+    frames_f = seconds * float(fps)
+    if mode == "floor":
+        frames = int(frames_f)
+    elif mode == "ceil":
+        frames = -int(-frames_f // 1)
+    else:
+        frames = round(frames_f)
+    ticks = frames * fps.denominator
+    return f"{ticks}/{fps.numerator}s"
+
+
 def generate_fcpxml(
     plan: SyncPlan,
     video_infos: list[MediaInfo],
@@ -48,12 +67,12 @@ def generate_fcpxml(
     resources = ET.SubElement(root, "resources")
 
     fmt_id = "r1"
-    fmt_name = f"FFVideoFormat{width}x{height}p{float(fps):.2f}"
+    # No `name`: a custom (non-standard) FFVideoFormat name makes Final Cut warn
+    # "Encountered an unexpected value"; frameDuration + width + height suffice.
     ET.SubElement(
         resources,
         "format",
         id=fmt_id,
-        name=fmt_name,
         frameDuration=frame_dur,
         width=str(width or 1920),
         height=str(height or 1080),
@@ -103,13 +122,14 @@ def generate_fcpxml(
     event = ET.SubElement(library, "event", name="BormoSync")
     project = ET.SubElement(event, "project", name=project_name)
 
+    seq_dur = _frame_rational(plan.total_duration, fps, "ceil")
     seq = ET.SubElement(
         project,
         "sequence",
         format=fmt_id,
         tcStart="0s",
         tcFormat="NDF",
-        duration=to_rational(plan.total_duration, timebase),
+        duration=seq_dur,
     )
 
     spine = ET.SubElement(seq, "spine")
@@ -120,27 +140,24 @@ def generate_fcpxml(
         name="Gap",
         offset="0s",
         start="0s",
-        duration=to_rational(plan.total_duration, timebase),
+        duration=seq_dur,
     )
 
     for clip in plan.clips:
         path_str = str(clip.path.resolve())
         ref_id = asset_map.get(path_str, "r2")
 
-        # Offsets/starts on the gap timeline use the video frame grid so every
-        # element snaps to the same sequence timebase; durations use the clip's
-        # own media timebase.
-        clip_tb = timebase if clip.kind == "video" else sample_rate
-
+        # All spine times are snapped to the sequence frame grid (offset rounded,
+        # duration floored so we never reference more media than the file holds).
         ET.SubElement(
             gap,
             "asset-clip",
             ref=ref_id,
             lane=str(clip.lane),
             name=clip.path.stem,
-            offset=to_rational(clip.offset, timebase),
-            start=to_rational(clip.in_point, clip_tb),
-            duration=to_rational(clip.duration, clip_tb),
+            offset=_frame_rational(clip.offset, fps, "round"),
+            start=_frame_rational(clip.in_point, fps, "round"),
+            duration=_frame_rational(clip.duration, fps, "floor"),
         )
 
     tree = ET.ElementTree(root)

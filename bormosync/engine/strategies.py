@@ -17,13 +17,14 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 
 from bormosync.config import BormoSyncConfig
 from bormosync.models import AlignmentMap, Anchor, MediaClip
 
 logger = logging.getLogger(__name__)
 
-AudioOp = dict[str, object]
+AudioOp = dict[str, Any]
 ClipPlan = tuple[list[MediaClip], list[AudioOp]]
 
 # Minimum length of a speech block, so an isolated anchor still yields audible
