@@ -149,6 +149,8 @@ python main.py --cli \
 | `--audio-source-camera` | str | Мультикам: имя подпапки-камеры, с которой берётся звук (по умолчанию авто) |
 | `--audio-file` (повтор) | Path | Можно указать несколько раз — несколько рекордеров |
 | `--recorder-mode` | str | `best` (одна дорожка, лучший рекордер на клип) или `all` (каждый рекордер на свою дорожку) |
+| `--crossfade` / `--no-crossfade` | flag | Микро-фейды на стыках аудиосегментов (declick), по умолчанию вкл. |
+| `--crossfade-ms` | int | Длина фейда в мс (по умолчанию `10`) |
 | `--config` | Path | Путь к JSON-конфигу |
 | `--no-cache` | flag | Отключить кэш транскрипций |
 | `--dry-run` | flag | Только выравнивание, без обработки |
@@ -208,7 +210,7 @@ python main.py --cli \
 
 - Точнее при нестабильном дрейфе
 - Несколько операций ffmpeg
-- Возможны артефакты на стыках при сильном растяжении
+- На стыках сегментов применяются микро-фейды (declick), включаются/выключаются галочкой «Crossfade segment seams» в GUI или `--crossfade`/`--no-crossfade` в CLI
 
 ### Strategy 3: Silence Padding
 
@@ -269,6 +271,8 @@ BormoSync поддерживает JSON-конфигурацию через `--c
     "use_cache": true,
     "timebase_source": "camera",
     "recorder_mode": "best",
+    "crossfade_enabled": true,
+    "crossfade_ms": 10,
     "min_anchors": 8,
     "anchor_min_confidence": 0.6,
     "phrase_gap_threshold": 0.6

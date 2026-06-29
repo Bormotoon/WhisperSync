@@ -303,6 +303,7 @@ def run_pipeline(
         audio_idx = 0
         seg_index = 0
         n_ops = max(len(plan.audio_ops), 1)
+        fade_ms = config.crossfade_ms if config.crossfade_enabled else 0
 
         def _assign(out_path: Path) -> None:
             nonlocal audio_idx
@@ -321,6 +322,7 @@ def run_pipeline(
                     float(op["duration"]),
                     float(op["factor"]),
                     seg_index,
+                    fade_ms=fade_ms,
                 )
                 _assign(out)
                 seg_index += 1
@@ -331,6 +333,7 @@ def run_pipeline(
                     float(op["start"]),
                     float(op["duration"]),
                     seg_index,
+                    fade_ms=fade_ms,
                 )
                 _assign(out)
                 seg_index += 1

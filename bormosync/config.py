@@ -79,6 +79,10 @@ class BormoSyncConfig:
     # synced from its best-matching recorder; "all" = every recorder on its own
     # audio lane (-1, -2, …) for multi-mic / multi-speaker setups.
     recorder_mode: str = "best"
+    # Short equal-power fades at audio segment seams to declick joints (mainly
+    # for the Local Time-Stretch strategy). Length-preserving, so no extra drift.
+    crossfade_enabled: bool = True
+    crossfade_ms: int = 10
     min_anchors: int = MIN_ANCHORS
     anchor_min_confidence: float = ANCHOR_MIN_CONFIDENCE
     phrase_gap_threshold: float = PHRASE_GAP_THRESHOLD

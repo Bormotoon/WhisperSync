@@ -76,6 +76,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "'all' = each recorder on its own lane (default: best)",
     )
     parser.add_argument(
+        "--crossfade",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Declick audio segment seams with short fades (default: on). "
+        "Use --no-crossfade to disable.",
+    )
+    parser.add_argument(
+        "--crossfade-ms",
+        type=int,
+        default=None,
+        help="Crossfade/declick fade length in ms (default: 10)",
+    )
+    parser.add_argument(
         "--strategy",
         choices=[1, 2, 3, 4],
         default=1,
@@ -271,6 +284,10 @@ def main() -> None:
         overrides["audio_source_camera"] = args.audio_source_camera
     if args.recorder_mode:
         overrides["recorder_mode"] = args.recorder_mode
+    if args.crossfade is not None:
+        overrides["crossfade_enabled"] = args.crossfade
+    if args.crossfade_ms is not None:
+        overrides["crossfade_ms"] = args.crossfade_ms
 
     if args.no_cache:
         overrides["use_cache"] = False

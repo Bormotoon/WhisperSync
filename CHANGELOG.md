@@ -5,6 +5,10 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Toggleable seam crossfades:** short equal-power fades at audio segment
+  joints declick the seams produced by the Local Time-Stretch strategy. They
+  are length-preserving (no extra drift) and can be turned off via the GUI
+  checkbox or `--crossfade`/`--no-crossfade` (`crossfade_enabled`, `crossfade_ms`).
 - **Production-grade Whisper engine** (settings ported from the Podcast Reels
   Forge pipeline, tuned on an RTX 5060 Ti 16GB):
   - `device`/`compute_type` now default to `auto` — CUDA when available with

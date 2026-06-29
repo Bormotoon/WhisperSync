@@ -9,6 +9,7 @@ from PyQt6.QtCore import QSettings, Qt, QThread
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -112,6 +113,9 @@ class MainWindow(QMainWindow):
         self.timebase_combo = QComboBox()
         self.timebase_combo.addItems(["camera", "recorder"])
         options_layout.addRow("Timebase source:", self.timebase_combo)
+        self.crossfade_check = QCheckBox("Crossfade segment seams (declick)")
+        self.crossfade_check.setChecked(self.config.crossfade_enabled)
+        options_layout.addRow(self.crossfade_check)
         left_layout.addWidget(options_group)
 
         self.btn_sync = QPushButton("SYNC")
@@ -236,6 +240,7 @@ class MainWindow(QMainWindow):
 
         strategy_id = self._get_strategy_id()
         self.config.timebase_source = self.timebase_combo.currentText()
+        self.config.crossfade_enabled = self.crossfade_check.isChecked()
 
         self.btn_sync.setEnabled(False)
         self.btn_cancel.setEnabled(True)

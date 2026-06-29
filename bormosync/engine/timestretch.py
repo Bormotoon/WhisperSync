@@ -13,6 +13,23 @@ from bormosync.engine.media import build_atempo_chain
 logger = logging.getLogger(__name__)
 
 
+def edge_fade_filters(out_duration: float, fade_ms: int) -> list[str]:
+    """Equal-power fade-in/out at the edges of a segment of length
+    ``out_duration`` seconds. Declicks segment seams without changing the
+    segment's length (so no drift is introduced). Empty if fades are disabled
+    or the segment is too short."""
+    if fade_ms <= 0 or out_duration <= 0:
+        return []
+    fade = min(fade_ms / 1000.0, out_duration / 2.0)
+    if fade <= 0:
+        return []
+    out_start = max(0.0, out_duration - fade)
+    return [
+        f"afade=t=in:st=0:d={fade:.4f}",
+        f"afade=t=out:st={out_start:.4f}:d={fade:.4f}",
+    ]
+
+
 def apply_atempo(input_path: Path, output_path: Path, factor: float) -> Path:
     chain = build_atempo_chain(factor)
     af = ",".join(chain)
@@ -40,9 +57,13 @@ def apply_atempo_segment(
     duration: float,
     factor: float,
     segment_index: int,
+    fade_ms: int = 0,
 ) -> Path:
     output_path = output_dir / f"segment_{segment_index:04d}.wav"
     chain = build_atempo_chain(factor)
+    # atempo=p changes length: out = in / p, so the output is duration/factor long.
+    out_duration = duration / factor if factor else duration
+    chain += edge_fade_filters(out_duration, fade_ms)
     af = ",".join(chain)
     # -ss before -i enables fast input seeking (sample-accurate for PCM/WAV),
     # so cutting many segments doesn't re-decode the whole file each time.
@@ -74,6 +95,7 @@ def extract_segment(
     start: float,
     duration: float,
     segment_index: int,
+    fade_ms: int = 0,
 ) -> Path:
     output_path = output_dir / f"segment_{segment_index:04d}.wav"
     cmd = [
@@ -85,10 +107,11 @@ def extract_segment(
         str(duration),
         "-i",
         str(input_path),
-        "-acodec",
-        "pcm_s16le",
-        str(output_path),
     ]
+    fades = edge_fade_filters(duration, fade_ms)
+    if fades:
+        cmd += ["-af", ",".join(fades)]
+    cmd += ["-acodec", "pcm_s16le", str(output_path)]
     logger.info("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:

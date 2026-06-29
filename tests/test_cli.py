@@ -41,6 +41,20 @@ def test_strategy_choices_include_hybrid() -> None:
     assert args.strategy == 4
 
 
+def test_crossfade_toggle() -> None:
+    parser = _build_parser()
+    assert parser.parse_args(["--video-dir", "v", "--audio-file", "r.wav"]).crossfade is None
+    assert (
+        parser.parse_args(["--video-dir", "v", "--audio-file", "r.wav", "--no-crossfade"]).crossfade
+        is False
+    )
+    args = parser.parse_args(
+        ["--video-dir", "v", "--audio-file", "r.wav", "--crossfade", "--crossfade-ms", "20"]
+    )
+    assert args.crossfade is True
+    assert args.crossfade_ms == 20
+
+
 def test_timebase_and_camera_flags() -> None:
     args = _build_parser().parse_args(
         [
