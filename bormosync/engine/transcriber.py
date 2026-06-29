@@ -39,24 +39,40 @@ logger = logging.getLogger(__name__)
 _CUDA_FLOAT16_MAJOR = 7
 
 
+def _ct2_cuda_available() -> bool:
+    """Whether CUDA is usable by faster-whisper (ctranslate2), independent of torch."""
+    try:
+        import ctranslate2
+
+        return int(ctranslate2.get_cuda_device_count()) > 0
+    except Exception:  # pragma: no cover - ctranslate2 is always present with faster_whisper
+        return False
+
+
 def resolve_device(requested: str) -> str:
-    """Resolve a requested device ("auto"/"cuda"/"cpu") to an available one."""
+    """Resolve a requested device ("auto"/"cuda"/"cpu") to an available one.
+
+    faster-whisper runs on ctranslate2, not torch, so CUDA can be used even when
+    torch is absent — we fall back to ctranslate2's own device probe.
+    """
     req = str(requested).strip().lower()
+    cuda = (torch is not None and torch.cuda.is_available()) or _ct2_cuda_available()
     if req == "auto":
-        return "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
+        return "cuda" if cuda else "cpu"
     if req == "cuda":
-        if torch is None:
-            logger.warning("CUDA requested but torch is not installed; using CPU")
-        elif torch.cuda.is_available():
+        if cuda:
             return "cuda"
-        else:
-            logger.warning("CUDA not available; falling back to CPU")
+        logger.warning("CUDA not available; falling back to CPU")
     return "cpu"
 
 
 def _default_compute_type(device: str) -> str:
-    if device != "cuda" or torch is None:
+    if device != "cuda":
         return "float32"
+    if torch is None:
+        # No torch to probe capability; float16 is the right default for any modern
+        # CUDA GPU (verified on the RTX 5060 Ti via ctranslate2 4.8).
+        return "float16"
     try:
         major, _minor = torch.cuda.get_device_capability()
     except (RuntimeError, AttributeError):
