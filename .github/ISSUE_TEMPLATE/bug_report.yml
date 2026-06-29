@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a problem with BormoSync
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a bug report!
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact command or GUI steps you used.
+      placeholder: |
+        python main.py --cli --video-dir ./videos --audio-file rec.wav --strategy 4
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Paste the full output. Re-run with `--verbose` if possible.
+      render: shell
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "e.g. Ubuntu 24.04 / macOS 14 / Windows 11"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "python --version"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: GPU / CPU, ffmpeg version
+      placeholder: "e.g. RTX 5060 Ti 16GB, ffmpeg 8.1"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I ran `python bormosync/engine/system_check.py` and attached relevant results
+        - label: I searched existing issues for duplicates

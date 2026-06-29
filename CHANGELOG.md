@@ -5,6 +5,11 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **GitHub-ready project**: real GUI screenshots (rendered via Qt offscreen) in
+  the README, bilingual README (RU + `README.en.md`), `CONTRIBUTING.md`,
+  `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue/PR templates, a GitHub Actions CI
+  workflow (ruff + black + mypy + pytest on 3.11/3.12), and richer `pyproject`
+  metadata (urls, classifiers, keywords).
 - **Full transcript export (JSON + SRT):** the transcription is computed for
   alignment anyway, so it is now also saved next to the output under
   `output/transcripts/` — one `.json` + `.srt` per recorder and per camera clip,

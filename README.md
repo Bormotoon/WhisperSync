@@ -3,10 +3,18 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)
+![Code style](https://img.shields.io/badge/code%20style-black%20%7C%20ruff%20%7C%20mypy-000000)
+
+**Русский** · [English](README.en.md)
 
 ---
 
-**BormoSync** — это инструмент для синхронизации звука и видео при dual-system recording: камера снимает видео с черновым звуком, а внешний рекордер (петличка, Zoom, Tascam) записывает чистый звук отдельно. BormoSync автоматически находит точное временное смещение между треками и генерирует FCPXML-проект для Final Cut Pro или DaVResolve.
+**BormoSync** — это инструмент для синхронизации звука и видео при dual-system recording: камера снимает видео с черновым звуком, а внешний рекордер (петличка, Zoom, Tascam) записывает чистый звук отдельно. BormoSync автоматически находит точное временное смещение между треками и генерирует FCPXML-проект для Final Cut Pro или DaVinci Resolve.
+
+![BormoSync GUI](docs/images/main_window.png)
+
+> Главное окно: drag-and-drop источников, выбор стратегии, многодорожечный таймлайн с живыми статусами и лог в реальном времени.
 
 Принцип работы: **транскрипция** → **поиск якорей** → **вычисление K/offset** → **стратегия синхронизации** → **FCPXML-экспорт**.
 
@@ -14,9 +22,23 @@
 
 Результат — FCPXML-файл с точной привязкой аудиоклипов к видео, готовый к импорту в Final Cut Pro или DaVinci Resolve. Никакого рендеринга: всё работает через ссылки на исходные файлы.
 
+## Содержание
+
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage) — [GUI](#gui) · [CLI](#cli)
+- [Strategies Guide](#strategies-guide)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Architecture](#architecture)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Features
 
-- **3 стратегии синхронизации** — Global Linear (линейный дрейф), Local Time-Stretch (нелинейный дрейф), Silence Padding (тональность-критичный)
+- **4 стратегии синхронизации** — Global Linear (линейный дрейф), Local Time-Stretch (нелинейный дрейф), Silence Padding (тональность-критичный) и Hybrid (универсальный)
 - **PyQt6 GUI** с dark theme, drag-and-drop зонами, визуализацией стратегий и предпросмотром таймлайна
 - **CLI headless mode** — полный контроль через командную строку, JSON-вывод для автоматизации
 - **Кэш транскрипций** по SHA-256 — повторный запуск без перетранскрибации
@@ -24,6 +46,31 @@
 - **RANSAC-регрессия** — устойчивое определение смещения и дрейфа даже с выбросами
 - **NVIDIA GPU** ускорение (CUDA/cuDNN) с CPU fallback
 - **Kроссплатформенность** — Windows, macOS, Linux
+
+## Screenshots
+
+### Многодорожечный таймлайн
+
+![Timeline](docs/images/timeline.png)
+
+Отдельная строка на каждую камеру и на каждую аудиодорожку. Видно реальное
+положение клипа (`DJI_0838` и `DJI_0839` с паузой между ними; вторая камера
+`GX010024` со своим смещением на отдельной дорожке), изменение скорости аудио
+(`−0.10%`, `+0.11%`) и живой статус: **done** (залит), **working** (оранжевая
+рамка), **pending** (пунктир). Наведение на клип показывает offset / duration /
+in-point / speed / status.
+
+### Схемы стратегий
+
+| Strategy 1 — Global Linear | Strategy 2 — Local Time-Stretch |
+|----------------------------|---------------------------------|
+| ![S1](docs/images/strategy_1.png) | ![S2](docs/images/strategy_2.png) |
+| Один блок, равномерное масштабирование | Сегменты, каждый со своим коэффициентом |
+
+| Strategy 3 — Silence Padding | Strategy 4 — Hybrid |
+|------------------------------|---------------------|
+| ![S3](docs/images/strategy_3.png) | ![S4](docs/images/strategy_4.png) |
+| Речь не трогается, меняются паузы | Фразы корректируются + паузы добирают остаток |
 
 ## Requirements
 
@@ -43,7 +90,7 @@
 
 ```bash
 # 1. Клонируйте репозиторий
-git clone https://github.com/your-username/BormoSync.git
+git clone https://github.com/Bormotoon/BormoSync.git
 cd BormoSync
 
 # 2. Создайте виртуальное окружение
@@ -68,7 +115,7 @@ python bormosync/engine/system_check.py
 python main.py
 ```
 
-<!-- screenshot-placeholder -->
+![BormoSync GUI](docs/images/main_window.png)
 
 PyQt6 GUI с dark theme:
 
@@ -412,6 +459,24 @@ Video files + Audio file
         │
         ▼
    generate_fcpxml() ──► .fcpxml (Final Cut Pro / DaVinci Resolve)
+```
+
+## Contributing
+
+Контрибьюции приветствуются! Пожалуйста, ознакомьтесь с гайдами:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — как собрать окружение, стиль кода, процесс PR
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — правила сообщества
+- [SECURITY.md](SECURITY.md) — как сообщить об уязвимости
+- [CHANGELOG.md](CHANGELOG.md) — история изменений
+
+Перед отправкой PR убедитесь, что проходят проверки:
+
+```bash
+ruff check bormosync/ tests/
+black --check bormosync/ tests/
+mypy bormosync/ main.py
+pytest
 ```
 
 ## License
