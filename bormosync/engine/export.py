@@ -67,8 +67,8 @@ def generate_fcpxml(
     resources = ET.SubElement(root, "resources")
 
     fmt_id = "r1"
-    # No `name`: a custom (non-standard) FFVideoFormat name makes Final Cut warn
-    # "Encountered an unexpected value"; frameDuration + width + height suffice.
+    # No custom `name` (a non-standard FFVideoFormat name makes Final Cut warn);
+    # colorSpace is declared so the sequence format resolves cleanly.
     ET.SubElement(
         resources,
         "format",
@@ -76,6 +76,7 @@ def generate_fcpxml(
         frameDuration=frame_dur,
         width=str(width or 1920),
         height=str(height or 1080),
+        colorSpace="1-1-1 (Rec. 709)",
     )
 
     asset_map: dict[str, str] = {}

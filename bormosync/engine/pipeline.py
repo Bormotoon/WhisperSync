@@ -24,7 +24,7 @@ from bormosync.engine.naming import natural_key
 from bormosync.engine.strategies import get_strategy
 from bormosync.engine.timestretch import (
     apply_atempo_segment,
-    assemble_clip,
+    assemble_continuous,
     extract_segment,
 )
 from bormosync.engine.transcriber import WhisperEngine
@@ -254,6 +254,78 @@ def sequence_order_warnings(
     return warnings
 
 
+def _phrase_blocks(rec_times: list[float], gap: float) -> list[tuple[float, float]]:
+    """Group sorted recorder-time word marks into [start, end] phrases, splitting
+    wherever the gap between consecutive words exceeds ``gap`` seconds."""
+    if not rec_times:
+        return []
+    blocks: list[tuple[float, float]] = []
+    start = end = rec_times[0]
+    for t in rec_times[1:]:
+        if t - end > gap:
+            blocks.append((start, end))
+            start = t
+        end = t
+    blocks.append((start, end))
+    return blocks
+
+
+def clip_pieces(
+    am: AlignmentMap,
+    clip_duration: float,
+    rec_duration: float,
+    strategy_id: int,
+    config: BormoSyncConfig,
+) -> tuple[float, list[tuple[float, float, float]]]:
+    """Contiguous recorder pieces that tile a camera clip, for a continuous warp.
+
+    Returns ``(lead_silence, pieces)`` where each piece is
+    ``(rec_start, rec_in_duration, atempo_factor)`` and pieces are in playback
+    order with no gaps between them — the recorder span for the clip is simply
+    time-stretched (globally or piecewise between sync points) so its speech
+    lands under the picture. ``lead_silence`` is the silence (seconds) before the
+    first piece, non-zero only when the recorder does not reach the clip start.
+
+    Strategy controls the breakpoint density: 1 = one global stretch, 2 = a piece
+    per anchor (tightest), 3/4 = a piece per phrase (smoother, fewer seams).
+    """
+    k = am.k or 1.0
+
+    def l2r(t_local: float) -> float:
+        return (t_local - am.offset) / k
+
+    def r2l(t_rec: float) -> float:
+        return am.offset + k * t_rec
+
+    rec0 = min(max(l2r(0.0), 0.0), rec_duration)
+    rec1 = min(max(l2r(clip_duration), 0.0), rec_duration)
+    if rec1 - rec0 <= 1e-3:
+        return 0.0, []
+
+    anchors = sorted(a.rec_time for a in am.anchors)
+    if strategy_id == 1:
+        breakpoints = [rec0, rec1]
+    elif strategy_id == 2:
+        breakpoints = [rec0, *[a for a in anchors if rec0 < a < rec1], rec1]
+    else:  # 3, 4 — break only between phrases
+        blocks = _phrase_blocks(anchors, config.phrase_gap_threshold)
+        mids = [(blocks[i][1] + blocks[i + 1][0]) / 2 for i in range(len(blocks) - 1)]
+        breakpoints = [rec0, *[m for m in mids if rec0 < m < rec1], rec1]
+
+    bps = sorted(set(breakpoints))
+    pieces: list[tuple[float, float, float]] = []
+    for i in range(len(bps) - 1):
+        ra, rb = bps[i], bps[i + 1]
+        in_dur = rb - ra
+        out_dur = r2l(rb) - r2l(ra)
+        if in_dur <= 1e-4 or out_dur <= 1e-4:
+            continue
+        pieces.append((ra, in_dur, in_dur / out_dur))
+
+    lead = max(0.0, r2l(rec0))
+    return lead, pieces
+
+
 def _timeline_end(clips: list[MediaClip]) -> float:
     return max((c.offset + c.duration for c in clips), default=0.0)
 
@@ -437,29 +509,14 @@ def run_pipeline(
         audio_clips: list[MediaClip] = []
         audio_speed: list[float] = []
         audio_track: list[str] = []
-        # (audio_clip_index, recorder_path, segments, clip_duration)
-        render_jobs: list[tuple[int, Path, list[dict[str, float]], float]] = []
-
-        def _segments_for(vclip: MediaClip, am: AlignmentMap, ri: int) -> list[dict[str, float]]:
-            cs, ops = strategy.plan_clip(
-                am, audio_files[ri], vclip.offset, vclip.duration, rec_infos[ri].duration, config
-            )
-            segs: list[dict[str, float]] = []
-            for c, op in zip(cs, ops, strict=True):
-                factor = float(op["factor"]) if op["type"] == "atempo_segment" else 1.0
-                segs.append(
-                    {
-                        "rec_start": float(op["start"]),
-                        "rec_dur": float(op["duration"]),
-                        "factor": factor,
-                        "local_start": max(0.0, c.offset - vclip.offset),
-                    }
-                )
-            return segs
+        # (audio_clip_index, recorder_path, lead_silence, pieces, clip_duration)
+        render_jobs: list[tuple[int, Path, float, list[tuple[float, float, float]], float]] = []
 
         def _add_job(vclip: MediaClip, am: AlignmentMap, ri: int, lane: int) -> None:
-            segs = _segments_for(vclip, am, ri)
-            if not segs:
+            lead, pieces = clip_pieces(
+                am, vclip.duration, rec_infos[ri].duration, strategy_id, config
+            )
+            if not pieces:
                 return
             label = f"Audio: {audio_files[ri].stem}" if config.recorder_mode == "all" else "Audio"
             audio_clips.append(
@@ -474,7 +531,9 @@ def run_pipeline(
             )
             audio_speed.append(1.0 / am.k if am.k else 1.0)
             audio_track.append(label)
-            render_jobs.append((len(audio_clips) - 1, audio_files[ri], segs, vclip.duration))
+            render_jobs.append(
+                (len(audio_clips) - 1, audio_files[ri], lead, pieces, vclip.duration)
+            )
 
         for ci in range(n):
             if clip_camera[ci] != audio_ci:
@@ -519,11 +578,12 @@ def run_pipeline(
         )
         _notify("planning", 1.0, f"Strategy {strategy_id}: {strategy.name}")
 
-        # --- render one synced WAV per clip ---
+        # --- render one continuous synced WAV per clip ---
         _notify("processing", 0.0, "Rendering synced audio...")
+        # Small length-preserving fades declick the seams between stretched pieces.
         fade_ms = config.crossfade_ms if config.crossfade_enabled else 0
         n_jobs = max(len(render_jobs), 1)
-        for j, (clip_idx, rec_path, segs, dur) in enumerate(render_jobs):
+        for j, (clip_idx, rec_path, lead, pieces, dur) in enumerate(render_jobs):
             audio_status[clip_idx] = "working"
             _notify(
                 "processing",
@@ -533,25 +593,17 @@ def run_pipeline(
             )
             with tempfile.TemporaryDirectory(prefix="bormosync_seg_") as td:
                 tdp = Path(td)
-                placements: list[tuple[Path, float]] = []
-                for k, seg in enumerate(segs):
-                    if abs(seg["factor"] - 1.0) > 1e-6:
+                seg_paths: list[Path] = []
+                for k, (rec_start, rec_dur, factor) in enumerate(pieces):
+                    if abs(factor - 1.0) > 1e-6:
                         sp = apply_atempo_segment(
-                            rec_path,
-                            tdp,
-                            seg["rec_start"],
-                            seg["rec_dur"],
-                            seg["factor"],
-                            k,
-                            fade_ms=fade_ms,
+                            rec_path, tdp, rec_start, rec_dur, factor, k, fade_ms=fade_ms
                         )
                     else:
-                        sp = extract_segment(
-                            rec_path, tdp, seg["rec_start"], seg["rec_dur"], k, fade_ms=fade_ms
-                        )
-                    placements.append((sp, seg["local_start"]))
+                        sp = extract_segment(rec_path, tdp, rec_start, rec_dur, k, fade_ms=fade_ms)
+                    seg_paths.append(sp)
                 out = audio_synced_dir / f"synced_{clip_idx:03d}.wav"
-                assemble_clip(placements, dur, out_sr, out)
+                assemble_continuous(seg_paths, lead, dur, out_sr, out)
             audio_clips[clip_idx].path = out
             audio_clips[clip_idx].in_point = 0.0
             audio_status[clip_idx] = "done"

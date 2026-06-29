@@ -207,6 +207,71 @@ def assemble_clip(
     return output_path
 
 
+def assemble_continuous(
+    segment_paths: list[Path],
+    lead_silence: float,
+    total_duration: float,
+    sample_rate: int,
+    output_path: Path,
+) -> Path:
+    """Concatenate stretched speech pieces (in order, no gaps) into one WAV of
+    exactly ``total_duration`` seconds.
+
+    ``lead_silence`` seconds of silence precede the first piece (only when the
+    recorder does not cover the clip's start); the tail is padded to length. The
+    audio *between* sync points is preserved and time-stretched — nothing is cut
+    out and no silence is inserted mid-clip, so phrases never get clipped.
+    """
+    if not segment_paths:
+        return generate_silence(output_path, total_duration, sample_rate)
+
+    inputs: list[str] = []
+    n = 0
+    if lead_silence > 1e-3:
+        inputs += [
+            "-f",
+            "lavfi",
+            "-t",
+            f"{lead_silence:.6f}",
+            "-i",
+            f"anullsrc=r={sample_rate}:cl=mono",
+        ]
+        n += 1
+    for p in segment_paths:
+        inputs += ["-i", str(p)]
+        n += 1
+
+    # Normalise every input to the target rate/mono so concat accepts them, glue
+    # in order, then pad+trim to the exact clip length.
+    parts = [f"[{j}:a]aresample={sample_rate},aformat=channel_layouts=mono[n{j}]" for j in range(n)]
+    norm = "".join(f"[n{j}]" for j in range(n))
+    parts.append(
+        f"{norm}concat=n={n}:v=0:a=1[c];"
+        f"[c]apad,atrim=0:{total_duration:.6f},asetpts=PTS-STARTPTS[out]"
+    )
+    cmd = [
+        "ffmpeg",
+        "-y",
+        *inputs,
+        "-filter_complex",
+        ";".join(parts),
+        "-map",
+        "[out]",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-acodec",
+        "pcm_s16le",
+        str(output_path),
+    ]
+    logger.info("Assembling continuous clip (%d pieces) → %s", len(segment_paths), output_path)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg continuous assembly failed: {result.stderr[-800:]}")
+    return output_path
+
+
 def concatenate_segments(segment_paths: list[Path], output_path: Path) -> Path:
     fd, list_path = tempfile.mkstemp(suffix=".txt", prefix="filelist_")
     try:
