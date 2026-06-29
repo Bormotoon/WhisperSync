@@ -169,3 +169,37 @@ def test_spine_times_are_frame_aligned(tmp_path: Path) -> None:
             ticks_s, den_s = ac.get(attr, "0/30000s")[:-1].split("/")
             assert int(den_s) == 30000
             assert int(ticks_s) % 1001 == 0, f"{attr} not on a frame boundary: {ac.get(attr)}"
+
+
+def test_mixed_fps_and_relative_src(tmp_path: Path) -> None:
+    """Cameras at different rates each get a format at their native fps, and media
+    living next to the FCPXML is referenced by a relative path."""
+    (tmp_path / "audio_synced").mkdir()
+    synced = tmp_path / "audio_synced" / "synced_000.wav"
+    synced.write_bytes(b"RIFF")
+
+    a = MediaInfo(
+        Path("/v/A.mp4"), 10.0, Fraction(30000, 1001), 1920, 1080, "h264", "aac", 2, 48000
+    )
+    b = MediaInfo(Path("/v/B.mp4"), 10.0, Fraction(30, 1), 3840, 2160, "h264", "aac", 2, 48000)
+    plan = SyncPlan(
+        strategy_id=1,
+        clips=[
+            MediaClip(Path("/v/A.mp4"), "video", 0.0, 0.0, 10.0, 1),
+            MediaClip(Path("/v/B.mp4"), "video", 12.0, 0.0, 10.0, 2),
+            MediaClip(synced, "audio", 0.0, 0.0, 10.0, -1),
+        ],
+        audio_ops=[],
+        total_duration=22.0,
+    )
+    out = tmp_path / "sync_output.fcpxml"
+    generate_fcpxml(plan, [a, b], out, audio_sample_rate=48000)
+    root = ET.parse(out).getroot()
+
+    frame_durs = {f.get("frameDuration") for f in root.findall(".//format")}
+    assert "1001/30000s" in frame_durs and "1/30s" in frame_durs  # both native rates
+
+    # co-located synced audio -> relative; source videos -> absolute file://
+    srcs = {a.get("name"): a.find("media-rep").get("src") for a in root.findall(".//asset")}
+    assert srcs["synced_000"] == "audio_synced/synced_000.wav"
+    assert srcs["A"].startswith("file://")

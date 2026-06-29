@@ -18,6 +18,20 @@ def to_rational(seconds: float, timebase: int) -> str:
     return f"{ticks}/{timebase}s"
 
 
+def _media_src(path: Path, base_dir: Path) -> str:
+    """media-rep ``src`` for a clip's file.
+
+    Media that lives under the FCPXML's own folder (the rendered synced audio) is
+    referenced by a path relative to the document, so the project stays portable
+    and Final Cut resolves it right next to the XML. Anything outside (the source
+    videos) keeps an absolute ``file://`` URL.
+    """
+    try:
+        return str(path.resolve().relative_to(base_dir))
+    except ValueError:
+        return path_to_file_uri(path)
+
+
 def fps_to_frame_duration(fps: Fraction) -> str:
     return f"{fps.denominator}/{fps.numerator}s"
 
@@ -50,37 +64,54 @@ def generate_fcpxml(
     audio_sample_rate: int | None = None,
 ) -> Path:
     ref_video = video_infos[0] if video_infos else None
-    fps: Fraction = (ref_video.fps or Fraction(25, 1)) if ref_video else Fraction(25, 1)
-    width: int = ref_video.width or 1920 if ref_video else 1920
-    height: int = ref_video.height or 1080 if ref_video else 1080
+    # Sequence (timeline) rate — every spine position is snapped to this grid.
+    seq_fps: Fraction = (ref_video.fps or Fraction(25, 1)) if ref_video else Fraction(25, 1)
+    seq_w: int = (ref_video.width or 1920) if ref_video else 1920
+    seq_h: int = (ref_video.height or 1080) if ref_video else 1080
     # Audio timebase: caller override (e.g. recorder rate) wins, else camera's.
     if audio_sample_rate:
         sample_rate: int = audio_sample_rate
     else:
         sample_rate = (ref_video.audio_sample_rate or 48000) if ref_video else 48000
-    timebase = fps.numerator
 
-    frame_dur = fps_to_frame_duration(fps)
+    info_by_path = {str(i.path.resolve()): i for i in video_infos}
 
     root = ET.Element("fcpxml", version=fcpxml_version)
-
     resources = ET.SubElement(root, "resources")
 
-    fmt_id = "r1"
-    # No custom `name` (a non-standard FFVideoFormat name makes Final Cut warn);
-    # colorSpace is declared so the sequence format resolves cleanly.
-    ET.SubElement(
-        resources,
-        "format",
-        id=fmt_id,
-        frameDuration=frame_dur,
-        width=str(width or 1920),
-        height=str(height or 1080),
-        colorSpace="1-1-1 (Rec. 709)",
-    )
+    # One resource-id counter shared by formats and assets.
+    _rid = [1]
+
+    def next_rid() -> str:
+        rid = f"r{_rid[0]}"
+        _rid[0] += 1
+        return rid
+
+    # A distinct <format> per (fps, width, height) so cameras at different rates
+    # (e.g. 29.97 vs 30) are each declared honestly and Final Cut conforms them.
+    formats: dict[tuple[int, int, int, int], str] = {}
+
+    def _format_for(f: Fraction, w: int, h: int) -> str:
+        key = (f.numerator, f.denominator, w or 1920, h or 1080)
+        fid = formats.get(key)
+        if fid is None:
+            fid = next_rid()
+            ET.SubElement(
+                resources,
+                "format",
+                id=fid,
+                frameDuration=fps_to_frame_duration(f),
+                width=str(w or 1920),
+                height=str(h or 1080),
+                colorSpace="1-1-1 (Rec. 709)",
+            )
+            formats[key] = fid
+        return fid
+
+    seq_fmt = _format_for(seq_fps, seq_w, seq_h)  # r1
 
     asset_map: dict[str, str] = {}
-    asset_counter = 2
+    base_dir = output_path.parent.resolve()
 
     seen_paths: set[str] = set()
     for clip in plan.clips:
@@ -89,32 +120,38 @@ def generate_fcpxml(
             continue
         seen_paths.add(path_str)
 
-        asset_id = f"r{asset_counter}"
-        asset_counter += 1
+        asset_id = next_rid()
         asset_map[path_str] = asset_id
-
-        file_uri = path_to_file_uri(clip.path)
-        is_video = clip.kind == "video"
-        # Asset duration is expressed on the asset's own timebase: the video
-        # frame grid for video, the audio sample rate for audio.
-        asset_tb = timebase if is_video else sample_rate
+        file_uri = _media_src(clip.path, base_dir)
         # NOTE: in FCPXML 1.9+ the file reference lives on the <media-rep> child,
-        # NOT as a `src` attribute on <asset> (the DTD has no such attribute and
-        # Final Cut rejects it). Keep the asset attributes to the declared set.
-        asset_attrs = {
-            "id": asset_id,
-            "name": clip.path.stem,
-            "start": "0s",
-            "duration": to_rational(clip.duration + clip.in_point, asset_tb),
-            "hasVideo": "1" if is_video else "0",
-            "hasAudio": "1",
-        }
-        if is_video:
-            asset_attrs["format"] = fmt_id
+        # NOT as a `src` attribute on <asset>. Durations use each asset's own grid:
+        # the video's native fps, or the audio sample rate.
+        if clip.kind == "video":
+            info = info_by_path.get(path_str)
+            cfps = info.fps if info and info.fps else seq_fps
+            cw = info.width if info and info.width else seq_w
+            ch = info.height if info and info.height else seq_h
+            asset_attrs = {
+                "id": asset_id,
+                "name": clip.path.stem,
+                "start": "0s",
+                "duration": _frame_rational(clip.duration + clip.in_point, cfps, "round"),
+                "hasVideo": "1",
+                "hasAudio": "1",
+                "format": _format_for(cfps, cw, ch),
+            }
         else:
-            asset_attrs["audioSources"] = "1"
-            asset_attrs["audioChannels"] = "1"
-            asset_attrs["audioRate"] = str(sample_rate)
+            asset_attrs = {
+                "id": asset_id,
+                "name": clip.path.stem,
+                "start": "0s",
+                "duration": to_rational(clip.duration + clip.in_point, sample_rate),
+                "hasVideo": "0",
+                "hasAudio": "1",
+                "audioSources": "1",
+                "audioChannels": "1",
+                "audioRate": str(sample_rate),
+            }
 
         asset_el = ET.SubElement(resources, "asset", asset_attrs)
         ET.SubElement(asset_el, "media-rep", kind="original-media", src=file_uri)
@@ -123,13 +160,13 @@ def generate_fcpxml(
     event = ET.SubElement(library, "event", name="BormoSync")
     project = ET.SubElement(event, "project", name=project_name)
 
-    seq_dur = _frame_rational(plan.total_duration, fps, "ceil")
+    seq_dur = _frame_rational(plan.total_duration, seq_fps, "ceil")
     seq = ET.SubElement(
         project,
         "sequence",
-        format=fmt_id,
+        format=seq_fmt,
         tcStart="0s",
-        tcFormat="NDF",
+        tcFormat="NDF",  # linear timecode (TC == real elapsed); avoids drop-frame ambiguity
         duration=seq_dur,
     )
 
@@ -156,9 +193,9 @@ def generate_fcpxml(
             ref=ref_id,
             lane=str(clip.lane),
             name=clip.path.stem,
-            offset=_frame_rational(clip.offset, fps, "round"),
-            start=_frame_rational(clip.in_point, fps, "round"),
-            duration=_frame_rational(clip.duration, fps, "floor"),
+            offset=_frame_rational(clip.offset, seq_fps, "round"),
+            start=_frame_rational(clip.in_point, seq_fps, "round"),
+            duration=_frame_rational(clip.duration, seq_fps, "floor"),
         )
 
     tree = ET.ElementTree(root)

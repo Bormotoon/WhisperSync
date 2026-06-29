@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -71,6 +72,18 @@ def probe(path: Path) -> MediaInfo:
         width = int(video_stream.get("width", 0)) or None
         height = int(video_stream.get("height", 0)) or None
         video_codec = video_stream.get("codec_name")
+
+        # Prefer a frame-accurate video duration: the container duration often runs
+        # a few frames longer than the picture (longer audio track / muxing slack),
+        # and that overshoot grows with length, so the FCPXML would claim more
+        # frames than the file holds and Final Cut would refuse to relink.
+        nb_frames = video_stream.get("nb_frames")
+        stream_dur = video_stream.get("duration")
+        if nb_frames and str(nb_frames).isdigit() and int(nb_frames) > 0 and fps:
+            duration = int(nb_frames) / float(fps)
+        elif stream_dur:
+            with contextlib.suppress(ValueError):
+                duration = float(stream_dur)
 
     audio_codec: str | None = None
     audio_channels: int | None = None
