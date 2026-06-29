@@ -90,6 +90,19 @@ speed / status.
 | ![S3](docs/images/strategy_3.png) | ![S4](docs/images/strategy_4.png) |
 | Speech untouched, gaps move | Phrases corrected + gaps absorb the rest |
 
+### Help tab & interactive simulator
+
+![Simulator](docs/images/simulator.png)
+
+The **Help** tab is a built-in tutorial that explains the whole pipeline and
+embeds an interactive **micro-sync simulator**. Drag the **clock drift** and
+**phrase length** sliders, then switch strategies on the left and watch the
+recorder track (red) reshape against the picture (blue) — exactly like the real
+timeline. The **accuracy** vs **distortion index** readouts make the trade-off
+concrete: time-stretch reaches 100 % alignment but distorts speech, padding adds
+zero distortion but leaves residual drift in long phrases, and Hybrid balances
+both. Great for understanding which strategy to pick before you run anything.
+
 ## Requirements
 
 | Component | Minimum | Recommended |

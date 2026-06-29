@@ -38,11 +38,11 @@ class StrategyDiagram(QWidget):
         return QRect(x, cy, w, h)
 
     def _draw_block(self, painter: QPainter, rect: QRect, color: QColor, label: str) -> None:
-        painter.setPen(QPen(QColor("#333333"), 1))
+        painter.setPen(QPen(QColor("#2A2A30"), 1))
         painter.setBrush(QBrush(color))
         painter.drawRoundedRect(rect, 4, 4)
 
-        painter.setPen(QColor("#EEEEEE"))
+        painter.setPen(QColor("#F0F0F1"))
         font = painter.font()
         font.setPointSize(8)
         painter.setFont(font)
@@ -51,11 +51,11 @@ class StrategyDiagram(QWidget):
     def _paint_global(self, painter: QPainter) -> None:
         margin = 16
         rect = self._block_rect(margin, self.width() - 2 * margin)
-        self._draw_block(painter, rect, QColor("#D32F2F"), "Global atempo")
+        self._draw_block(painter, rect, QColor("#E53935"), "Global atempo")
 
     def _paint_segments(self, painter: QPainter) -> None:
         colors = [
-            QColor("#D32F2F"),
+            QColor("#E53935"),
             QColor("#E53935"),
             QColor("#FF5722"),
             QColor("#FF7043"),
@@ -75,13 +75,13 @@ class StrategyDiagram(QWidget):
     def _paint_speech_silence(self, painter: QPainter) -> None:
         margin = 16
         segments = [
-            (0.18, "#D32F2F", "Speech"),
+            (0.18, "#E53935", "Speech"),
             (0.06, "#333333", None),
-            (0.22, "#D32F2F", "Speech"),
+            (0.22, "#E53935", "Speech"),
             (0.08, "#333333", None),
-            (0.15, "#D32F2F", "Speech"),
+            (0.15, "#E53935", "Speech"),
             (0.05, "#333333", None),
-            (0.20, "#D32F2F", "Speech"),
+            (0.20, "#E53935", "Speech"),
         ]
         total_w = self.width() - 2 * margin
         x = margin
@@ -103,13 +103,13 @@ class StrategyDiagram(QWidget):
         # phrases tempo-corrected (orange = stretched) with silence gaps between
         margin = 16
         segments = [
-            (0.20, "#FF5722", "K·Phrase"),
+            (0.20, "#FF6E40", "K·Phrase"),
             (0.06, "#333333", None),
-            (0.18, "#FF5722", "K·Phrase"),
+            (0.18, "#FF6E40", "K·Phrase"),
             (0.08, "#333333", None),
-            (0.22, "#FF5722", "K·Phrase"),
+            (0.22, "#FF6E40", "K·Phrase"),
             (0.05, "#333333", None),
-            (0.16, "#FF5722", "K·Phrase"),
+            (0.16, "#FF6E40", "K·Phrase"),
         ]
         total_w = self.width() - 2 * margin
         x = margin

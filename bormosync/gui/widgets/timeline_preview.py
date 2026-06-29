@@ -15,9 +15,9 @@ from PyQt6.QtWidgets import QWidget
 
 # status -> (fill, border) colours
 _VIDEO_BASE = "#1E88E5"
-_AUDIO_BASE = "#D32F2F"
+_AUDIO_BASE = "#E53935"
 _STATUS_ALPHA = {"pending": 55, "working": 130, "done": 255}
-_WORKING_BORDER = "#FF5722"
+_WORKING_BORDER = "#FF6E40"
 
 _MARGIN_L = 96
 _MARGIN_R = 16
@@ -74,8 +74,12 @@ class TimelinePreview(QWidget):
         self._hit = []
 
         if not self._clips:
-            painter.setPen(QColor("#888888"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No timeline yet")
+            painter.setPen(QColor("#9CA0A6"))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "No timeline yet — drop media and press SYNC to preview clip placement",
+            )
             painter.end()
             return
 
@@ -90,7 +94,7 @@ class TimelinePreview(QWidget):
 
     def _paint_ruler(self, painter: QPainter, total: float) -> None:
         y = _TOP
-        painter.setPen(QPen(QColor("#333333"), 1))
+        painter.setPen(QPen(QColor("#2A2A30"), 1))
         painter.drawLine(_MARGIN_L, y, _MARGIN_L + self._area_w(), y)
         font = QFont()
         font.setPointSize(8)
@@ -100,9 +104,9 @@ class TimelinePreview(QWidget):
         for i in range(ticks + 1):
             t = step * i
             x = self._x(t, total)
-            painter.setPen(QPen(QColor("#333333"), 1))
+            painter.setPen(QPen(QColor("#2A2A30"), 1))
             painter.drawLine(x, y, x, y + 5)
-            painter.setPen(QColor("#888888"))
+            painter.setPen(QColor("#9CA0A6"))
             painter.drawText(x - 18, y - 6, 40, 12, Qt.AlignmentFlag.AlignCenter, _fmt_time(t))
 
     def _row_y(self, row_pos: int) -> int:
@@ -114,10 +118,10 @@ class TimelinePreview(QWidget):
         painter.setFont(font)
         for pos, (_row, label) in enumerate(self._rows):
             y = self._row_y(pos)
-            painter.setBrush(QBrush(QColor("#141414")))
+            painter.setBrush(QBrush(QColor("#16161A")))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRect(_MARGIN_L, y, self._area_w(), _ROW_H)
-            painter.setPen(QColor("#AAAAAA"))
+            painter.setPen(QColor("#9CA0A6"))
             painter.drawText(4, y, _MARGIN_L - 10, _ROW_H, Qt.AlignmentFlag.AlignVCenter, label)
 
     def _row_pos(self, row: int) -> int:

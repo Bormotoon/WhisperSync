@@ -6,23 +6,23 @@ from PyQt6.QtWidgets import QTextEdit
 
 class LogView(QTextEdit):
     _COLORS: dict[str, str] = {
-        "DEBUG": "#888888",
-        "INFO": "#EEEEEE",
-        "WARNING": "#FF5722",
-        "ERROR": "#D32F2F",
+        "DEBUG": "#9CA0A6",
+        "INFO": "#F0F0F1",
+        "WARNING": "#FF6E40",
+        "ERROR": "#F05550",
     }
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setStyleSheet("QTextEdit { background: #0A0A0A; color: #EEEEEE; border: none; }")
+        # Visual styling (background, rounded border) comes from theme.qss.
         mono = QFont("Monospace")
         mono.setStyleHint(QFont.StyleHint.Monospace)
         mono.setPointSize(10)
         self.setFont(mono)
 
     def append_log(self, message: str, level: str = "INFO") -> None:
-        color = self._COLORS.get(level.upper(), "#EEEEEE")
+        color = self._COLORS.get(level.upper(), "#F0F0F1")
         fmt = QTextCharFormat()
         fmt.setForeground(QColor(color))
 
