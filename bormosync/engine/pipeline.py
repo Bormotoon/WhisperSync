@@ -254,22 +254,6 @@ def sequence_order_warnings(
     return warnings
 
 
-def _phrase_blocks(rec_times: list[float], gap: float) -> list[tuple[float, float]]:
-    """Group sorted recorder-time word marks into [start, end] phrases, splitting
-    wherever the gap between consecutive words exceeds ``gap`` seconds."""
-    if not rec_times:
-        return []
-    blocks: list[tuple[float, float]] = []
-    start = end = rec_times[0]
-    for t in rec_times[1:]:
-        if t - end > gap:
-            blocks.append((start, end))
-            start = t
-        end = t
-    blocks.append((start, end))
-    return blocks
-
-
 def clip_pieces(
     am: AlignmentMap,
     clip_duration: float,
@@ -302,27 +286,53 @@ def clip_pieces(
     if rec1 - rec0 <= 1e-3:
         return 0.0, []
 
-    anchors = sorted(a.rec_time for a in am.anchors)
-    if strategy_id == 1:
-        breakpoints = [rec0, rec1]
-    elif strategy_id == 2:
-        breakpoints = [rec0, *[a for a in anchors if rec0 < a < rec1], rec1]
-    else:  # 3, 4 — break only between phrases
-        blocks = _phrase_blocks(anchors, config.phrase_gap_threshold)
-        mids = [(blocks[i][1] + blocks[i + 1][0]) / 2 for i in range(len(blocks) - 1)]
-        breakpoints = [rec0, *[m for m in mids if rec0 < m < rec1], rec1]
+    # Interior breakpoints come from the REAL matched word times — each is
+    # (recorder_time, local_clip_time), where local time is the anchor's camera
+    # time. Warping between these tracks the actual (non-linear) drift instead of
+    # a single global slope.
+    pts = sorted(
+        (a.rec_time, a.cam_time)
+        for a in am.anchors
+        if rec0 < a.rec_time < rec1 and 0.0 <= a.cam_time <= clip_duration
+    )
 
-    bps = sorted(set(breakpoints))
+    # Strategy 1 (or no usable anchors): one global stretch across the clip.
+    if strategy_id == 1 or not pts:
+        out_dur = r2l(rec1) - r2l(rec0)
+        lead = max(0.0, r2l(rec0))
+        if out_dur <= 1e-3:
+            return lead, []
+        return lead, [(rec0, rec1 - rec0, (rec1 - rec0) / out_dur)]
+
+    # Strategies 3 & 4: fewer seams — thin anchors to roughly one per phrase.
+    if strategy_id in (3, 4):
+        spacing = max(config.phrase_gap_threshold, 1.0)
+        thinned: list[tuple[float, float]] = []
+        for rt, ct in pts:
+            if not thinned or rt - thinned[-1][0] >= spacing:
+                thinned.append((rt, ct))
+        pts = thinned
+
+    # Clip edges use the global line; interior uses matched word times. Keep only
+    # strictly-increasing (rec, local) breakpoints so every piece is sane.
+    raw_bps = [(rec0, r2l(rec0)), *pts, (rec1, r2l(rec1))]
+    bps: list[tuple[float, float]] = []
+    for rt, lt in raw_bps:
+        if not bps or (rt > bps[-1][0] + 1e-3 and lt > bps[-1][1] + 1e-3):
+            bps.append((rt, lt))
+
     pieces: list[tuple[float, float, float]] = []
     for i in range(len(bps) - 1):
-        ra, rb = bps[i], bps[i + 1]
+        (ra, la), (rb, lb) = bps[i], bps[i + 1]
         in_dur = rb - ra
-        out_dur = r2l(rb) - r2l(ra)
+        out_dur = lb - la
         if in_dur <= 1e-4 or out_dur <= 1e-4:
             continue
-        pieces.append((ra, in_dur, in_dur / out_dur))
+        # Safety clamp: a stray anchor can never blow the stretch past atempo's range.
+        factor = max(0.5, min(2.0, in_dur / out_dur))
+        pieces.append((ra, in_dur, factor))
 
-    lead = max(0.0, r2l(rec0))
+    lead = max(0.0, bps[0][1])
     return lead, pieces
 
 

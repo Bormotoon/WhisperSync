@@ -9,11 +9,32 @@ import pytest
 from bormosync.config import BormoSyncConfig
 from bormosync.engine.pipeline import (
     CameraGroup,
+    clip_pieces,
     compute_master_offsets,
     make_timeline_entries,
     scan_cameras,
 )
-from bormosync.models import AlignmentMap, MediaClip
+from bormosync.models import AlignmentMap, Anchor, MediaClip
+
+
+def test_clip_pieces_tracks_nonlinear_drift() -> None:
+    """Local Time-Stretch (strategy 2) must vary its stretch per segment to follow
+    the matched word times — not collapse to one global factor (the old bug)."""
+    anchors = [
+        Anchor(cam_time=t + 0.1 * (t % 3), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(1, 11)
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
+    cfg = BormoSyncConfig()
+
+    _, pieces = clip_pieces(am, clip_duration=12.0, rec_duration=20.0, strategy_id=2, config=cfg)
+    factors = {round(f, 4) for _, _, f in pieces}
+    assert len(pieces) >= 3
+    assert len(factors) > 1, "piecewise warp should differ per segment, not be global"
+
+    # strategy 1 is a single global stretch
+    _, global_pieces = clip_pieces(am, 12.0, 20.0, strategy_id=1, config=cfg)
+    assert len(global_pieces) == 1
 
 
 def _align(rec_start: float, k: float = 1.0) -> AlignmentMap:

@@ -146,6 +146,31 @@ def find_anchors(
     return _anchors_from_words(cam_words, rec_words)
 
 
+def reject_gross_outliers(
+    anchors: list[Anchor], window: int = 10, tol_s: float = 0.30
+) -> list[Anchor]:
+    """Drop anchors whose ``cam_time - rec_time`` delta disagrees with their local
+    neighbourhood — i.e. a word matched to the wrong (far-away) occurrence.
+
+    Unlike a global-linear inlier test, this keeps anchors that follow a *smooth*
+    (possibly non-linear) drift, because each is only compared to its neighbours.
+    ``anchors`` must be sorted by rec_time (as produced by ``_anchors_from_words``).
+    """
+    if len(anchors) < 2 * window:
+        return anchors
+    deltas = [a.cam_time - a.rec_time for a in anchors]
+    n = len(anchors)
+    kept: list[Anchor] = []
+    for i, a in enumerate(anchors):
+        lo = max(0, i - window)
+        hi = min(n, i + window + 1)
+        local = sorted(deltas[lo:hi])
+        median = local[len(local) // 2]
+        if abs(deltas[i] - median) <= tol_s:
+            kept.append(a)
+    return kept
+
+
 def ransac_linear_fit(
     anchors: list[Anchor],
     n_iterations: int = 200,
@@ -242,28 +267,40 @@ def align(
             "The transcripts may not contain enough matching speech."
         )
 
-    offset, k, inliers = ransac_linear_fit(anchors)
+    # Drop gross mismatches (a word matched to a wrong far-away occurrence) while
+    # KEEPING anchors that follow the smooth local drift. These feed the per-clip
+    # piecewise warp, so they must track the real (non-linear) drift — not be
+    # flattened onto a single line.
+    kept = reject_gross_outliers(anchors)
+    if len(kept) < 2:
+        kept = anchors
 
-    residuals_ms = [abs((offset + k * a.rec_time) - a.cam_time) * 1000 for a in inliers]
-    residual_ms = float(np.median(residuals_ms))
+    # A robust global line (offset, K) still drives timeline placement and the
+    # Global-Linear strategy; it is fit on the cleaned anchors.
+    offset, k, line_inliers = ransac_linear_fit(kept)
 
-    if len(inliers) < config.min_anchors:
+    residuals_ms = [abs((offset + k * a.rec_time) - a.cam_time) * 1000 for a in line_inliers]
+    residual_ms = float(np.median(residuals_ms)) if residuals_ms else 0.0
+
+    if len(line_inliers) < config.min_anchors:
         logger.warning(
             "Only %d inlier anchors (minimum recommended: %d). Alignment may be inaccurate.",
-            len(inliers),
+            len(line_inliers),
             config.min_anchors,
         )
 
     logger.info(
-        "Alignment: offset=%.4fs, K=%.6f, anchors=%d, residual=%.1fms",
+        "Alignment: offset=%.4fs, K=%.6f, anchors=%d (kept %d of %d raw), residual=%.1fms",
         offset,
         k,
-        len(inliers),
+        len(line_inliers),
+        len(kept),
+        len(anchors),
         residual_ms,
     )
 
     return AlignmentMap(
-        anchors=inliers,
+        anchors=kept,
         offset=offset,
         k=k,
         residual_ms=residual_ms,

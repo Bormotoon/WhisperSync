@@ -11,8 +11,25 @@ from bormosync.engine.matcher import (
     find_anchors,
     normalize_token,
     normalize_words,
+    reject_gross_outliers,
 )
-from bormosync.models import Segment, Transcript, Word
+from bormosync.models import Anchor, Segment, Transcript, Word
+
+
+def test_reject_gross_outliers_keeps_smooth_drift() -> None:
+    """Anchors following a smooth (even non-linear) drift are kept; a single word
+    matched to a far-away occurrence is dropped."""
+    anchors = [
+        Anchor(cam_time=t + 0.01 * t, rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(40)
+    ]
+    bad = Anchor(cam_time=anchors[20].cam_time + 5.0, rec_time=20.0, token="x", confidence=0.9)
+    anchors[20] = bad
+
+    kept = reject_gross_outliers(anchors, window=8, tol_s=0.3)
+
+    assert bad not in kept
+    assert len(kept) >= 38  # every smooth-drift anchor survives
 
 
 def _make_transcript(
