@@ -36,7 +36,7 @@ class DropZone(QFrame):
         self._path: str | None = None
 
         self.setAcceptDrops(True)
-        self.setMinimumHeight(96)
+        self.setMinimumHeight(84)
         self._apply_surface(hover=False)
 
         layout = QVBoxLayout(self)

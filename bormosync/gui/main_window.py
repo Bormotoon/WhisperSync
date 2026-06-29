@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -40,7 +41,10 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("BormoSync — Audio/Video Synchronization")
-        self.setMinimumSize(1100, 700)
+        # Floor below which the layout would get cramped; the left column scrolls
+        # rather than crushing its groups. Open larger so everything fits at once.
+        self.setMinimumSize(1040, 640)
+        self.resize(1280, 940)
 
         self.config = BormoSyncConfig()
         self.settings = QSettings("BormoSync", "BormoSync")
@@ -59,7 +63,7 @@ class MainWindow(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(16, 16, 8, 16)
-        left_layout.setSpacing(12)
+        left_layout.setSpacing(10)
 
         title = QLabel("BormoSync")
         title.setFont(QFont("Arial", 24, QFont.Weight.Bold))
@@ -106,6 +110,7 @@ class MainWindow(QMainWindow):
         self.radio4 = QRadioButton("4 — Hybrid (Global + Silence)")
         self.radio1.setChecked(True)
         for r in (self.radio1, self.radio2, self.radio3, self.radio4):
+            r.setMinimumHeight(26)  # never let the label clip vertically
             r.toggled.connect(self._on_strategy_changed)
             strategy_layout.addWidget(r)
         left_layout.addWidget(strategy_group)
@@ -198,9 +203,21 @@ class MainWindow(QMainWindow):
         right_tabs.addTab(self.help_page, "Help")
         self.right_tabs = right_tabs
 
-        splitter.addWidget(left_panel)
+        # Wrap the controls column in a scroll area so a short window scrolls it
+        # instead of crushing the groups (the radios used to clip). The panel keeps
+        # its natural width and never shrinks below what the content needs.
+        left_panel.setMinimumWidth(320)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setWidget(left_panel)
+        left_scroll.setMinimumWidth(340)
+
+        splitter.addWidget(left_scroll)
         splitter.addWidget(right_tabs)
-        splitter.setSizes([380, 720])
+        splitter.setStretchFactor(0, 0)  # controls column stays compact
+        splitter.setStretchFactor(1, 1)  # timeline / simulator side absorbs resize
+        splitter.setSizes([400, 760])
 
         layout = QHBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
