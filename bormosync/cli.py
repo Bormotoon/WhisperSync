@@ -116,8 +116,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("output/sync_output.fcpxml"),
-        help="Output FCPXML path",
+        default=None,
+        help="Output FCPXML path (default: sync_output.fcpxml in the video folder)",
     )
     parser.add_argument("--model", default=None, help="Whisper model name")
     parser.add_argument("--device", default=None, help="Device: cuda or cpu")
@@ -302,13 +302,16 @@ def main() -> None:
 
     config = load_config(args.config, **overrides)
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    # Default the output next to the sources (the video folder), which usually
+    # lives on a volume with room — unlike the repo's working directory.
+    output_path = args.output or (args.video_dir / "sync_output.fcpxml")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     _print("BormoSync — Starting synchronization")
     _print(f"  Video dir:   {args.video_dir}")
     _print(f"  Audio files: {', '.join(str(a) for a in args.audio_files)}")
     _print(f"  Strategy:    {args.strategy}")
-    _print(f"  Output:      {args.output}")
+    _print(f"  Output:      {output_path}")
     _print("")
 
     try:
@@ -337,7 +340,7 @@ def main() -> None:
                 video_dir=args.video_dir,
                 audio_files=args.audio_files,
                 strategy_id=args.strategy,
-                output_path=args.output,
+                output_path=output_path,
                 progress_callback=_progress_printer,
             )
             if args.json_output:

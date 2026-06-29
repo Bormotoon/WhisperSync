@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("BormoSync", "BormoSync")
         self._worker: SyncWorker | None = None
         self._thread: QThread | None = None
+        self._output_user_set = False  # has the user picked an explicit output folder?
 
         self._setup_ui()
         self._restore_state()
@@ -101,6 +102,20 @@ class MainWindow(QMainWindow):
         self.btn_browse_audio.clicked.connect(self._browse_audio)
         audio_layout.addWidget(self.btn_browse_audio)
         left_layout.addWidget(audio_group)
+
+        output_group = QGroupBox("Output Folder")
+        output_layout = QVBoxLayout(output_group)
+        self.output_drop = DropZone(
+            placeholder="Defaults to the video folder",
+            accept_dirs=True,
+            accepted_extensions=[],
+        )
+        self.output_drop.path_dropped.connect(self._on_output_dropped)
+        output_layout.addWidget(self.output_drop)
+        self.btn_browse_output = QPushButton("Browse...")
+        self.btn_browse_output.clicked.connect(self._browse_output)
+        output_layout.addWidget(self.btn_browse_output)
+        left_layout.addWidget(output_group)
 
         strategy_group = QGroupBox("Sync Strategy")
         strategy_layout = QVBoxLayout(strategy_group)
@@ -251,15 +266,27 @@ class MainWindow(QMainWindow):
     def _on_video_dropped(self, path: str) -> None:
         self.settings.setValue("last_video_dir", path)
         self.log_view.append_log(f"Video folder: {path}")
+        self._maybe_default_output(path)
 
     def _on_audio_dropped(self, path: str) -> None:
         self.settings.setValue("last_audio_file", path)
         self.log_view.append_log(f"Audio file: {path}")
 
+    def _on_output_dropped(self, path: str) -> None:
+        self._output_user_set = True
+        self.log_view.append_log(f"Output folder: {path}")
+
+    def _maybe_default_output(self, video_path: str) -> None:
+        """Until the user picks one explicitly, the output folder follows the
+        sources — they usually live on a volume with room to spare."""
+        if video_path and not self._output_user_set:
+            self.output_drop.set_path(video_path)
+
     def _browse_video(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Video Folder")
         if path:
             self.video_drop.set_path(path)
+            self._maybe_default_output(path)
 
     def _browse_audio(self) -> None:
         exts = " ".join(f"*{e}" for e in self.config.audio_exts)
@@ -268,6 +295,12 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.audio_drop.set_path(path)
+
+    def _browse_output(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Output Folder")
+        if path:
+            self.output_drop.set_path(path)
+            self._output_user_set = True
 
     def _start_sync(self) -> None:
         video_path = self.video_drop.current_path
@@ -280,8 +313,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Please select an audio file.")
             return
 
-        output_dir = self.config.resolved_output_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Output goes to the chosen folder, or next to the sources by default.
+        output_dir = Path(self.output_drop.current_path or video_path)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "Error", f"Cannot use output folder:\n{exc}")
+            return
         output_path = output_dir / "sync_output.fcpxml"
 
         strategy_id = self._get_strategy_id()
@@ -371,6 +409,7 @@ class MainWindow(QMainWindow):
         last_audio = self.settings.value("last_audio_file", "")
         if last_video and Path(str(last_video)).exists():
             self.video_drop.set_path(str(last_video))
+            self._maybe_default_output(str(last_video))
         if last_audio and Path(str(last_audio)).exists():
             self.audio_drop.set_path(str(last_audio))
 
