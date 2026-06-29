@@ -591,7 +591,9 @@ def run_pipeline(
                 f"Rendering synced audio {j + 1}/{n_jobs}",
                 clips=_timeline_snapshot(),
             )
-            with tempfile.TemporaryDirectory(prefix="bormosync_seg_") as td:
+            # Keep scratch segments on the OUTPUT volume (next to the result), not
+            # the system /tmp — /tmp may be small or on a full disk.
+            with tempfile.TemporaryDirectory(prefix="bormosync_seg_", dir=audio_synced_dir) as td:
                 tdp = Path(td)
                 seg_paths: list[Path] = []
                 for k, (rec_start, rec_dur, factor) in enumerate(pieces):
