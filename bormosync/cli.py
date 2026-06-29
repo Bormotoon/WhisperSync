@@ -102,7 +102,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", default=None, help="Whisper model name")
     parser.add_argument("--device", default=None, help="Device: cuda or cpu")
-    parser.add_argument("--compute-type", default=None, help="Compute type: float16, int8, etc.")
+    parser.add_argument(
+        "--compute-type", default=None, help="Compute type: auto, float16, int8, etc."
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Batched-inference batch size; main GPU speed lever (default: 16)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["fast", "quality"],
+        default=None,
+        dest="transcribe_mode",
+        help="fast=batched (default); quality=sequential, context-aware, slower but more accurate",
+    )
+    parser.add_argument(
+        "--initial-prompt",
+        default=None,
+        help="Optional domain context to bias Whisper vocabulary",
+    )
     parser.add_argument("--language", default=None, help="Language code (e.g. ru, en)")
     parser.add_argument("--fcpxml-version", default=None, help="FCPXML version (default: 1.9)")
     parser.add_argument("--config", type=Path, default=None, help="Path to JSON config file")
@@ -235,6 +255,12 @@ def main() -> None:
         overrides["device"] = args.device
     if args.compute_type:
         overrides["compute_type"] = args.compute_type
+    if args.batch_size is not None:
+        overrides["batch_size"] = args.batch_size
+    if args.transcribe_mode:
+        overrides["transcribe_mode"] = args.transcribe_mode
+    if args.initial_prompt is not None:
+        overrides["initial_prompt"] = args.initial_prompt
     if args.language:
         overrides["language"] = args.language
     if args.fcpxml_version:

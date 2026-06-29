@@ -28,7 +28,11 @@ SEED_MAX_OCCURRENCES = 50  # ignore tokens appearing more than this in the refer
 SEED_BIN_WIDTH = 2.0  # seconds — histogram bin width for the coarse-offset vote
 
 WHISPER_BEAM_SIZE = 5
-WHISPER_TEMPERATURE = 0.0
+
+# Anti-hallucination temperature fallback ladder (proven on real podcast audio):
+# a segment with high compression_ratio (repeats) or low logprob is retried at
+# the next temperature, which kills the endless "Спасибо." loop on silence/music.
+WHISPER_TEMPERATURE_LADDER = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 
 # Which source provides the audio sample-rate reference for FCPXML time values.
 TIMEBASE_SOURCES = ("camera", "recorder")
@@ -37,10 +41,29 @@ TIMEBASE_SOURCES = ("camera", "recorder")
 @dataclass
 class BormoSyncConfig:
     model: str = "large-v3"
-    device: str = "cuda"
-    compute_type: str = "float16"
+    # "auto" resolves to cuda when available, else cpu. compute_type "auto" picks
+    # float16 on modern CUDA (capability >= 7.0), int8_float16 on older GPUs,
+    # float32 on CPU.
+    device: str = "auto"
+    compute_type: str = "auto"
     language: str | None = None
     vad_filter: bool = True
+    beam_size: int = WHISPER_BEAM_SIZE
+    # Batched GPU inference — the main speed lever (esp. for multi-hour recorders).
+    # On CUDA OOM the engine auto-halves the batch, then falls back to CPU.
+    batch_size: int = 16
+    best_of: int = 1
+    patience: float = 1.0
+    condition_on_previous_text: bool = False
+    repetition_penalty: float = 1.1
+    no_repeat_ngram_size: int = 3
+    # "fast" = batched pipeline (no cross-segment context, ~real-time on GPU).
+    # "quality" = sequential pipeline with context + hallucination guard: more
+    # accurate on hard/quiet audio but ~10x slower.
+    transcribe_mode: str = "fast"
+    quality_beam_size: int = 10
+    # Optional domain context to bias vocabulary (helps both modes).
+    initial_prompt: str = ""
     video_exts: list[str] = field(default_factory=lambda: list(DEFAULT_VIDEO_EXTS))
     audio_exts: list[str] = field(default_factory=lambda: list(DEFAULT_AUDIO_EXTS))
     fcpxml_version: str = "1.9"

@@ -138,8 +138,11 @@ python main.py --cli \
 | `--strategy` | int | Стратегия: `1`, `2`, `3` или `4` (по умолчанию `1`) |
 | `--output` | Path | Путь для FCPXML (по умолчанию `output/sync_output.fcpxml`) |
 | `--model` | str | Модель Whisper (по умолчанию `large-v3`) |
-| `--device` | str | `cuda` или `cpu` (по умолчанию `cuda`) |
-| `--compute-type` | str | `float16`, `int8` и т.д. (по умолчанию `float16`) |
+| `--device` | str | `auto` / `cuda` / `cpu` (по умолчанию `auto`) |
+| `--compute-type` | str | `auto` / `float16` / `int8` и т.д. (по умолчанию `auto`) |
+| `--batch-size` | int | Размер батча для GPU-инференса, главный рычаг скорости (по умолчанию `16`) |
+| `--mode` | str | `fast` (батчевый) или `quality` (последовательный, точнее, ~10× медленнее) |
+| `--initial-prompt` | str | Подсказка темы для смещения словаря Whisper |
 | `--language` | str | Код языка (`ru`, `en`, ...) или `None` для авто |
 | `--fcpxml-version` | str | Версия FCPXML (по умолчанию `1.9`) |
 | `--timebase-source` | str | `camera` или `recorder` — источник sample-rate для таймкодов FCPXML |
@@ -243,10 +246,20 @@ BormoSync поддерживает JSON-конфигурацию через `--c
 ```json
 {
     "model": "large-v3",
-    "device": "cuda",
-    "compute_type": "float16",
-    "language": "ru",
+    "device": "auto",
+    "compute_type": "auto",
+    "language": "auto",
     "vad_filter": true,
+    "beam_size": 5,
+    "batch_size": 16,
+    "best_of": 1,
+    "patience": 1.0,
+    "condition_on_previous_text": false,
+    "repetition_penalty": 1.1,
+    "no_repeat_ngram_size": 3,
+    "transcribe_mode": "fast",
+    "quality_beam_size": 10,
+    "initial_prompt": "",
     "video_exts": [".mp4", ".mov", ".mxf", ".avi", ".mkv"],
     "audio_exts": [".wav", ".mp3", ".m4a", ".flac"],
     "fcpxml_version": "1.9",
@@ -255,6 +268,7 @@ BormoSync поддерживает JSON-конфигурацию через `--c
     "output_dir": null,
     "use_cache": true,
     "timebase_source": "camera",
+    "recorder_mode": "best",
     "min_anchors": 8,
     "anchor_min_confidence": 0.6,
     "phrase_gap_threshold": 0.6

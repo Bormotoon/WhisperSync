@@ -5,6 +5,19 @@ All notable changes to BormoSync will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Production-grade Whisper engine** (settings ported from the Podcast Reels
+  Forge pipeline, tuned on an RTX 5060 Ti 16GB):
+  - `device`/`compute_type` now default to `auto` — CUDA when available with
+    float16 (or int8_float16 on older GPUs), float32 on CPU.
+  - Batched GPU inference (`batch_size`, default 16) with an OOM fallback ladder
+    (GPU batch → batch/2 → … → CPU) for fast multi-hour transcription.
+  - Anti-hallucination decoding: temperature ladder, `condition_on_previous_text`
+    off by default, `repetition_penalty`, `no_repeat_ngram_size`, plus
+    compression-ratio / log-prob / no-speech thresholds and tuned VAD params —
+    kills the "endless Спасибо." loop, yielding cleaner anchors.
+  - `fast` (batched) vs `quality` (sequential, context-aware) modes, optional
+    `initial_prompt`, `best_of`, `patience`. New CLI: `--batch-size`, `--mode`,
+    `--initial-prompt`. `HF_HUB_DISABLE_XET=1` set to avoid HF network hangs.
 - **Multiple recorders (different devices):** pass several `--audio-file` flags.
   Each clip is aligned against every recorder; the timeline is placed from the
   best-covering ("primary") recorder. `recorder_mode` / `--recorder-mode`:
