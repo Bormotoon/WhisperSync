@@ -60,6 +60,10 @@ class MediaClip:
     in_point: float
     duration: float
     lane: int
+    # Optional FCPXML display name (falls back to the file stem) and FCPX role
+    # (e.g. "Dialogue", "Effects", "Video") so the editor colours/groups clips.
+    display_name: str | None = None
+    role: str | None = None
 
 
 @dataclass

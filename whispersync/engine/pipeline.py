@@ -162,6 +162,7 @@ def scan_cameras(video_dir: Path, config: WhisperSyncConfig) -> list[CameraGroup
                     in_point=0.0,
                     duration=info.duration,
                     lane=lane,
+                    role="Video",
                 )
             )
         cameras.append(CameraGroup(name=name, lane=lane, infos=infos, clips=clips))
@@ -629,6 +630,12 @@ def run_pipeline(
             if not pieces:
                 return
             label = f"Audio: {audio_files[ri].stem}" if config.recorder_mode == "all" else "Audio"
+            # Friendly name tied to the camera clip (e.g. "DJI_0830_voice"); with
+            # several recorders, disambiguate by recorder stem. Role = Dialogue so
+            # FCPX colours/groups the synced voice as dialogue.
+            voice_name = f"{vclip.path.stem}_voice"
+            if config.recorder_mode == "all":
+                voice_name = f"{vclip.path.stem}_{audio_files[ri].stem}_voice"
             audio_clips.append(
                 MediaClip(
                     path=audio_files[ri],
@@ -637,6 +644,8 @@ def run_pipeline(
                     in_point=0.0,
                     duration=vclip.duration,
                     lane=lane,
+                    display_name=voice_name,
+                    role="Dialogue",
                 )
             )
             audio_speed.append(1.0 / am.k if am.k else 1.0)
@@ -818,6 +827,8 @@ def run_pipeline(
                             in_point=0.0,
                             duration=vclip.duration,
                             lane=ambient_lane,
+                            display_name=f"{vclip.path.stem}_ambience",
+                            role="Effects",
                         )
                     )
                 plan.clips.extend(amb_clips)

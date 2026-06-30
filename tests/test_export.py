@@ -207,3 +207,85 @@ def test_mixed_fps_and_relative_src(tmp_path: Path) -> None:
     srcs = {a.get("name"): a.find("media-rep").get("src") for a in root.findall(".//asset")}
     assert srcs["synced_000"] == "audio_synced/synced_000.wav"
     assert srcs["A"].startswith("file://")
+
+
+def _vinfo(path: str, dur: float) -> MediaInfo:
+    return MediaInfo(
+        path=Path(path),
+        duration=dur,
+        fps=Fraction(30000, 1001),
+        width=1920,
+        height=1080,
+        video_codec="h264",
+        audio_codec="aac",
+        audio_channels=2,
+        audio_sample_rate=48000,
+    )
+
+
+def test_display_names_and_roles(tmp_path: Path) -> None:
+    clips = [
+        MediaClip(
+            path=Path("/v/DJI_0830.MOV"),
+            kind="video",
+            offset=0.0,
+            in_point=0.0,
+            duration=10.0,
+            lane=1,
+            role="Video",
+        ),
+        MediaClip(
+            path=Path("/a/synced_001.wav"),
+            kind="audio",
+            offset=0.0,
+            in_point=0.0,
+            duration=10.0,
+            lane=-1,
+            display_name="DJI_0830_voice",
+            role="Dialogue",
+        ),
+        MediaClip(
+            path=Path("/a/blah_(Instrumental)_melband.wav"),
+            kind="audio",
+            offset=0.0,
+            in_point=0.0,
+            duration=10.0,
+            lane=-2,
+            display_name="DJI_0830_ambience",
+            role="Effects",
+        ),
+    ]
+    plan = SyncPlan(strategy_id=4, clips=clips, audio_ops=[], total_duration=10.0)
+    out = tmp_path / "roles.fcpxml"
+    generate_fcpxml(plan, [_vinfo("/v/DJI_0830.MOV", 10.0)], out, audio_sample_rate=48000)
+    root = ET.parse(out).getroot()
+
+    by_name = {c.get("name"): c for c in root.findall(".//asset-clip")}
+    assert set(by_name) == {"DJI_0830", "DJI_0830_voice", "DJI_0830_ambience"}
+    # roles land on the right attribute (videoRole vs audioRole)
+    assert by_name["DJI_0830"].get("videoRole") == "Video"
+    assert by_name["DJI_0830_voice"].get("audioRole") == "Dialogue"
+    assert by_name["DJI_0830_ambience"].get("audioRole") == "Effects"
+    # friendly names also propagate to the <asset> entries
+    asset_names = {a.get("name") for a in root.findall(".//asset")}
+    assert "DJI_0830_voice" in asset_names and "DJI_0830_ambience" in asset_names
+
+
+def test_no_role_omits_attribute(tmp_path: Path) -> None:
+    clips = [
+        MediaClip(
+            path=Path("/v/a.mov"),
+            kind="video",
+            offset=0.0,
+            in_point=0.0,
+            duration=5.0,
+            lane=1,
+        )
+    ]
+    plan = SyncPlan(strategy_id=1, clips=clips, audio_ops=[], total_duration=5.0)
+    out = tmp_path / "norole.fcpxml"
+    generate_fcpxml(plan, [_vinfo("/v/a.mov", 5.0)], out)
+    clip = ET.parse(out).getroot().find(".//asset-clip")
+    assert clip is not None
+    assert clip.get("videoRole") is None and clip.get("audioRole") is None
+    assert clip.get("name") == "a"  # falls back to stem

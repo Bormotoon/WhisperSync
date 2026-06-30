@@ -126,6 +126,7 @@ def generate_fcpxml(
         # NOTE: in FCPXML 1.9+ the file reference lives on the <media-rep> child,
         # NOT as a `src` attribute on <asset>. Durations use each asset's own grid:
         # the video's native fps, or the audio sample rate.
+        asset_name = clip.display_name or clip.path.stem
         if clip.kind == "video":
             info = info_by_path.get(path_str)
             cfps = info.fps if info and info.fps else seq_fps
@@ -133,7 +134,7 @@ def generate_fcpxml(
             ch = info.height if info and info.height else seq_h
             asset_attrs = {
                 "id": asset_id,
-                "name": clip.path.stem,
+                "name": asset_name,
                 "start": "0s",
                 "duration": _frame_rational(clip.duration + clip.in_point, cfps, "round"),
                 "hasVideo": "1",
@@ -143,7 +144,7 @@ def generate_fcpxml(
         else:
             asset_attrs = {
                 "id": asset_id,
-                "name": clip.path.stem,
+                "name": asset_name,
                 "start": "0s",
                 "duration": to_rational(clip.duration + clip.in_point, sample_rate),
                 "hasVideo": "0",
@@ -184,16 +185,26 @@ def generate_fcpxml(
     # Frame duration (seconds) of the sequence grid, used to align spine offsets.
     frame_s = float(seq_fps.denominator) / float(seq_fps.numerator)
 
+    def _clip_name(clip: MediaClip) -> str:
+        return clip.display_name or clip.path.stem
+
+    def _set_role(el: ET.Element, clip: MediaClip) -> None:
+        # FCPX colours/groups clips by role: videoRole on video, audioRole on audio.
+        if clip.role:
+            el.set("videoRole" if clip.kind == "video" else "audioRole", clip.role)
+
     def _spine_clip(clip: MediaClip, offset_str: str) -> ET.Element:
-        return ET.SubElement(
+        el = ET.SubElement(
             spine,
             "asset-clip",
             ref=asset_map.get(str(clip.path.resolve()), "r2"),
-            name=clip.path.stem,
+            name=_clip_name(clip),
             offset=offset_str,
             start=_frame_rational(clip.in_point, seq_fps, "round"),
             duration=_frame_rational(clip.duration, seq_fps, "floor"),
         )
+        _set_role(el, clip)
+        return el
 
     # Lay the video clips end-to-end with gaps for the holes. The spine's own clock
     # ("offset") is contiguous; each element's offset is where it begins on it.
@@ -221,16 +232,17 @@ def generate_fcpxml(
         # document is still valid.
         gap = ET.SubElement(spine, "gap", name="Gap", offset="0s", start="0s", duration=seq_dur)
         for clip in audio_clips:
-            ET.SubElement(
+            el = ET.SubElement(
                 gap,
                 "asset-clip",
                 ref=asset_map.get(str(clip.path.resolve()), "r2"),
                 lane=str(clip.lane),
-                name=clip.path.stem,
+                name=_clip_name(clip),
                 offset=_frame_rational(clip.offset, seq_fps, "round"),
                 start=_frame_rational(clip.in_point, seq_fps, "round"),
                 duration=_frame_rational(clip.duration, seq_fps, "floor"),
             )
+            _set_role(el, clip)
     else:
         # Attach each audio clip to the spine video clip covering its start; its
         # offset is relative to that parent's own start time.
@@ -248,16 +260,17 @@ def generate_fcpxml(
             # Connected clip: `offset` is its position on the PARENT's local timeline
             # (parent's own offset + rel), `start` is the clip's source in-point.
             parent_offset_s = parent_start  # spine offset == timeline start here
-            ET.SubElement(
+            el = ET.SubElement(
                 parent_el,
                 "asset-clip",
                 ref=asset_map.get(str(clip.path.resolve()), "r2"),
                 lane=str(clip.lane),
-                name=clip.path.stem,
+                name=_clip_name(clip),
                 offset=_frame_rational(parent_offset_s + rel, seq_fps, "round"),
                 start=_frame_rational(clip.in_point, seq_fps, "round"),
                 duration=_frame_rational(clip.duration, seq_fps, "floor"),
             )
+            _set_role(el, clip)
 
     tree = ET.ElementTree(root)
     output_path.parent.mkdir(parents=True, exist_ok=True)
