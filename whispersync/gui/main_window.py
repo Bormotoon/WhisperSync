@@ -7,10 +7,13 @@ from pathlib import Path
 
 from PyQt6.QtCore import (
     QEasingCurve,
+    QMessageLogContext,
     QPropertyAnimation,
     QSettings,
     Qt,
     QThread,
+    QtMsgType,
+    qInstallMessageHandler,
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -503,7 +506,29 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
+def _install_quiet_message_handler() -> None:
+    """Drop one benign Qt warning, pass everything else through unchanged.
+
+    On headless / portal-less GNOME, Qt probes ``org.freedesktop.portal.Settings``
+    for the system theme; when that portal isn't running it prints
+    "Call to org.freedesktop.portal.Settings.ReadAll failed …". It's emitted by an
+    unconditional ``qWarning`` (not a logging category), so ``QT_LOGGING_RULES``
+    can't mute it — a message handler is the only hook. We ship our own theme, so
+    the missing portal changes nothing.
+    """
+
+    def handler(mode: QtMsgType, context: QMessageLogContext, message: str | None) -> None:
+        if message and "org.freedesktop.portal" in message:
+            return
+        if message:
+            print(message, file=sys.stderr)
+
+    qInstallMessageHandler(handler)
+
+
 def main() -> None:
+    _install_quiet_message_handler()
+
     app = QApplication(sys.argv)
 
     # Modern UI font stack with explicit anti-aliasing; falls back gracefully
