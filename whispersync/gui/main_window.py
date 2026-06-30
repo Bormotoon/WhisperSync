@@ -5,7 +5,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, Qt, QThread
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QPropertyAnimation,
+    QSettings,
+    Qt,
+    QThread,
+)
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -22,6 +28,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSlider,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -122,8 +129,10 @@ class MainWindow(QMainWindow):
         self.radio1 = QRadioButton("1 — Global Linear Calibration")
         self.radio2 = QRadioButton("2 — Local Time-Stretch")
         self.radio3 = QRadioButton("3 — Silence Padding (pitch-safe)")
-        self.radio4 = QRadioButton("4 — Hybrid (Global + Silence)")
-        self.radio1.setChecked(True)
+        self.radio4 = QRadioButton("4 — Hybrid (Global + Silence)  ·  recommended")
+        # Strategy 4 (Hybrid) is the recommended default: near-perfect alignment at
+        # about half the distortion of pure stretching.
+        self.radio4.setChecked(True)
         for r in (self.radio1, self.radio2, self.radio3, self.radio4):
             r.setMinimumHeight(26)  # never let the label clip vertically
             r.toggled.connect(self._on_strategy_changed)
@@ -138,6 +147,44 @@ class MainWindow(QMainWindow):
         self.crossfade_check = QCheckBox("Crossfade segment seams (declick)")
         self.crossfade_check.setChecked(self.config.crossfade_enabled)
         options_layout.addRow(self.crossfade_check)
+
+        # Boundary Flex — acoustic sub-frame refinement. On by default for the best
+        # lip-sync out of the box; costs a little extra processing.
+        self.flex_check = QCheckBox("Boundary Flex (acoustic sub-frame lip-sync)")
+        self.flex_check.setChecked(True)
+        self.flex_check.setToolTip(
+            "Fine-tune each phrase's position by cross-correlating the camera and "
+            "recorder audio, so lips and sound match to within a frame."
+        )
+        options_layout.addRow(self.flex_check)
+
+        # Pause ducking — attenuate inter-phrase pauses to hide ambience desync.
+        self.duck_check = QCheckBox("Duck pauses (hide ambience desync)")
+        self.duck_check.setChecked(self.config.pause_duck_enabled)
+        self.duck_check.setToolTip(
+            "Lower the volume during pauses between phrases so a slightly mis-synced "
+            "room tone in the gaps is inaudible."
+        )
+        self.duck_check.toggled.connect(self._on_duck_toggled)
+        options_layout.addRow(self.duck_check)
+
+        # dB slider: 0 dB (off) … -60 dB (treated as silence). Shown only as enabled
+        # when ducking is on. Step of 1 dB; label shows the live value (or −∞).
+        self.duck_slider = QSlider(Qt.Orientation.Horizontal)
+        self.duck_slider.setRange(-60, 0)  # -60 == full silence (−∞), 0 == no change
+        self.duck_slider.setSingleStep(1)
+        self.duck_slider.setPageStep(3)
+        self.duck_slider.setValue(int(self.config.pause_duck_db))
+        self.duck_slider.valueChanged.connect(self._on_duck_db_changed)
+        self.duck_slider.setEnabled(self.duck_check.isChecked())
+        self.duck_value = QLabel(self._duck_db_text(int(self.config.pause_duck_db)))
+        duck_db_row = QHBoxLayout()
+        duck_db_row.addWidget(self.duck_slider, stretch=1)
+        duck_db_row.addWidget(self.duck_value)
+        self.duck_db_label = QLabel("Pause level:")
+        options_layout.addRow(self.duck_db_label, duck_db_row)
+        self.duck_db_label.setEnabled(self.duck_check.isChecked())
+
         left_layout.addWidget(options_group)
 
         self.btn_sync = QPushButton("SYNC")
@@ -180,6 +227,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
         progress_layout.addWidget(self.progress_bar)
+        # Smoothly tween the bar to each new value instead of snapping — small touch
+        # that makes progress feel continuous rather than steppy.
+        self._progress_anim = QPropertyAnimation(self.progress_bar, b"value")
+        self._progress_anim.setDuration(220)
+        self._progress_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         right_layout.addWidget(progress_group)
 
         result_group = QGroupBox("Results")
@@ -247,7 +299,9 @@ class MainWindow(QMainWindow):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
         for rb in self.findChildren(QRadioButton):
             rb.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.crossfade_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        for cb in self.findChildren(QCheckBox):
+            cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.duck_slider.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self._on_strategy_changed()
 
@@ -262,6 +316,19 @@ class MainWindow(QMainWindow):
 
     def _on_strategy_changed(self) -> None:
         self.help_page.set_strategy(self._get_strategy_id())
+
+    @staticmethod
+    def _duck_db_text(db: int) -> str:
+        # The slider floor is treated as full silence.
+        return "−∞ dB" if db <= -60 else f"{db:+d} dB" if db != 0 else "0 dB (off)"
+
+    def _on_duck_toggled(self, on: bool) -> None:
+        self.duck_slider.setEnabled(on)
+        self.duck_db_label.setEnabled(on)
+        self.duck_value.setEnabled(on)
+
+    def _on_duck_db_changed(self, value: int) -> None:
+        self.duck_value.setText(self._duck_db_text(value))
 
     def _on_video_dropped(self, path: str) -> None:
         self.settings.setValue("last_video_dir", path)
@@ -325,6 +392,12 @@ class MainWindow(QMainWindow):
         strategy_id = self._get_strategy_id()
         self.config.timebase_source = self.timebase_combo.currentText()
         self.config.crossfade_enabled = self.crossfade_check.isChecked()
+        self.config.boundary_flex = self.flex_check.isChecked()
+        self.config.pause_duck_enabled = self.duck_check.isChecked()
+        # Slider floor (-60) means full silence; map it to a very negative dB so the
+        # ducking filter zeroes the gain (apply_pause_ducking treats ≤ -120 as 0).
+        db = self.duck_slider.value()
+        self.config.pause_duck_db = -200.0 if db <= -60 else float(db)
 
         self.right_tabs.setCurrentIndex(0)  # show the Run tab during processing
         self.btn_sync.setEnabled(False)
@@ -361,7 +434,15 @@ class MainWindow(QMainWindow):
             self.log_view.append_log("Cancellation requested...", "WARNING")
 
     def _on_progress(self, value: int) -> None:
-        self.progress_bar.setValue(value)
+        # Animate toward the new value (skip the tween for resets to 0).
+        if value <= 0:
+            self._progress_anim.stop()
+            self.progress_bar.setValue(0)
+            return
+        self._progress_anim.stop()
+        self._progress_anim.setStartValue(self.progress_bar.value())
+        self._progress_anim.setEndValue(value)
+        self._progress_anim.start()
 
     def _on_stage(self, stage: str) -> None:
         self.stage_label.setText(stage)
@@ -370,7 +451,7 @@ class MainWindow(QMainWindow):
     def _on_finished(self, result: object) -> None:
         self.btn_sync.setEnabled(True)
         self.btn_cancel.setEnabled(False)
-        self.progress_bar.setValue(100)
+        self._on_progress(100)
         self.stage_label.setText("Done!")
 
         from whispersync.models import SyncResult

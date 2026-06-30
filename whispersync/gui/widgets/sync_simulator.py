@@ -104,6 +104,20 @@ def _fmt_time(seconds: float) -> str:
     return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
 
 
+# Same green→yellow→red drift language as the real timeline, driven here by the
+# tempo change the strategy applies (in %). ~1.5% ≈ full red.
+_DRIFT_FULL_PCT = 1.5
+
+
+def _drift_color(speed_pct: float) -> QColor:
+    t = min(abs(speed_pct) / _DRIFT_FULL_PCT, 1.0)
+    if t < 0.5:
+        u = t / 0.5
+        return QColor(int(62 + 162 * u), int(179 + 17 * u), int(80 - 16 * u))
+    u = (t - 0.5) / 0.5
+    return QColor(int(224 + 16 * u), int(196 - 111 * u), int(64 + 16 * u))
+
+
 class _SimCanvas(QWidget):
     """The painted part: two tracks, blocks, playhead, ruler and legend."""
 
@@ -146,7 +160,10 @@ class _SimCanvas(QWidget):
             g_x = self._x(rs, total)
             g_end = self._x(rs + gw_ms, total)
             g_w = max(3.0, g_end - g_x)
-            self._block(p, g_x, rec_y, g_w, bh, QColor(_REC), "audio", badge=badge)
+            # Tint the synced phrase by the tempo correction, exactly like the real
+            # timeline: green when barely touched, red when heavily stretched.
+            rec_color = _drift_color(pct)
+            self._block(p, g_x, rec_y, g_w, bh, rec_color, "audio", badge=badge)
 
             # padding bars (strategies 3 & 4 adjust the silence between phrases)
             if m.strategy in (3, 4) and i < _N_PHRASES - 1:
@@ -280,7 +297,8 @@ class _SimCanvas(QWidget):
         x = _MARGIN_L
         for color, label in (
             (_REF, "Reference"),
-            (_REC, "Recorder"),
+            (_GOOD, "In sync"),
+            (_BAD, "Heavy correction"),
             (_PAD, "Padding"),
             (_ACCENT, "Stretched / residual"),
         ):
