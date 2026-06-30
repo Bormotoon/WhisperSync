@@ -1,4 +1,4 @@
-# BormoSync — Advanced Audio/Video Synchronization Tool
+# WhisperSync — Advanced Audio/Video Synchronization Tool
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
@@ -10,15 +10,15 @@
 
 ---
 
-**BormoSync** — это инструмент для синхронизации звука и видео при dual-system recording: камера снимает видео с черновым звуком, а внешний рекордер (петличка, Zoom, Tascam) записывает чистый звук отдельно. BormoSync автоматически находит точное временное смещение между треками и генерирует FCPXML-проект для Final Cut Pro или DaVinci Resolve.
+**WhisperSync** — это инструмент для синхронизации звука и видео при dual-system recording: камера снимает видео с черновым звуком, а внешний рекордер (петличка, Zoom, Tascam) записывает чистый звук отдельно. WhisperSync автоматически находит точное временное смещение между треками и генерирует FCPXML-проект для Final Cut Pro или DaVinci Resolve.
 
-![BormoSync GUI](docs/images/main_window.png)
+![WhisperSync GUI](docs/images/main_window.png)
 
 > Главное окно: drag-and-drop источников, выбор стратегии, многодорожечный таймлайн с живыми статусами и лог в реальном времени.
 
 Принцип работы: **транскрипция** → **поиск якорей** → **вычисление K/offset** → **стратегия синхронизации** → **FCPXML-экспорт**.
 
-Используя [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2), BormoSync транскрибирует оба аудиопотока с word-level таймстемпами, находит совпадающие слова (якоря) через последовательностное выравнивание, применяет RANSAC-регрессию для устойчивого определения линейного дрейфа часов (K = скорость, offset = смещение), а затем выбирает оптимальную стратегию синхронизации в зависимости от условий записи.
+Используя [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2), WhisperSync транскрибирует оба аудиопотока с word-level таймстемпами, находит совпадающие слова (якоря) через последовательностное выравнивание, применяет RANSAC-регрессию для устойчивого определения линейного дрейфа часов (K = скорость, offset = смещение), а затем выбирает оптимальную стратегию синхронизации в зависимости от условий записи.
 
 Результат — FCPXML-файл с точной привязкой аудиоклипов к видео, готовый к импорту в Final Cut Pro или DaVinci Resolve. Никакого рендеринга: всё работает через ссылки на исходные файлы.
 
@@ -104,8 +104,8 @@ padding не искажает звук, но оставляет остаточн
 
 ```bash
 # 1. Клонируйте репозиторий
-git clone https://github.com/Bormotoon/BormoSync.git
-cd BormoSync
+git clone https://github.com/Bormotoon/WhisperSync.git
+cd WhisperSync
 
 # 2. Создайте виртуальное окружение
 python -m venv venv
@@ -116,7 +116,7 @@ source venv/bin/activate   # Linux/macOS
 pip install -r requirements.txt
 
 # 4. Проверьте окружение
-python bormosync/engine/system_check.py
+python whispersync/engine/system_check.py
 ```
 
 Скрипт `system_check.py` проверит наличие ffmpeg, CUDA, Python, зависимостей и свободного места на диске. Вывод — цветная таблица с результатами + файл `report.json`.
@@ -129,7 +129,7 @@ python bormosync/engine/system_check.py
 python main.py
 ```
 
-![BormoSync GUI](docs/images/main_window.png)
+![WhisperSync GUI](docs/images/main_window.png)
 
 PyQt6 GUI с dark theme:
 
@@ -228,7 +228,7 @@ python main.py --cli \
 
 ```
 ═══════════════════════════════════════════════
-  BormoSync — Results
+  WhisperSync — Results
 ═══════════════════════════════════════════════
   Anchors found: 42
   K (drift):     1.000237
@@ -310,7 +310,7 @@ python main.py --cli \
 
 ### JSON Config
 
-BormoSync поддерживает JSON-конфигурацию через `--config config.json`:
+WhisperSync поддерживает JSON-конфигурацию через `--config config.json`:
 
 ```json
 {
@@ -412,24 +412,24 @@ Residual: 156.2 ms (high — results may be inaccurate)
 
 ### Кэш транскрипций
 
-Кэш хранится в `~/.cache/bormosync/` (Linux) или аналогичном каталоге. Для сброса:
+Кэш хранится в `~/.cache/whispersync/` (Linux) или аналогичном каталоге. Для сброса:
 
 ```bash
 # Через CLI
 python main.py --cli --no-cache --video-dir ./videos --audio-file rec.wav
 
 # Или удалите кэш вручную
-rm -rf ~/.cache/bormosync/
+rm -rf ~/.cache/whispersync/
 ```
 
 ## Architecture
 
 ```
-BormoSync/
+WhisperSync/
 ├── main.py                          # Entry point (GUI / CLI dispatch)
-├── bormosync/
+├── whispersync/
 │   ├── cli.py                       # argparse CLI interface
-│   ├── config.py                    # BormoSyncConfig dataclass + JSON loader
+│   ├── config.py                    # WhisperSyncConfig dataclass + JSON loader
 │   ├── models.py                    # Word, Segment, Transcript, Anchor, SyncPlan...
 │   ├── engine/
 │   │   ├── pipeline.py              # End-to-end orchestration
@@ -487,14 +487,14 @@ Video files + Audio file
 Перед отправкой PR убедитесь, что проходят проверки:
 
 ```bash
-ruff check bormosync/ tests/
-black --check bormosync/ tests/
-mypy bormosync/ main.py
+ruff check whispersync/ tests/
+black --check whispersync/ tests/
+mypy whispersync/ main.py
 pytest
 ```
 
 ## License
 
-MIT License — Copyright (c) 2024-2025 BormoSync Contributors.
+MIT License — Copyright (c) 2024-2025 WhisperSync Contributors.
 
 See [LICENSE](LICENSE) for details.

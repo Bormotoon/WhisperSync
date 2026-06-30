@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a problem with BormoSync
+description: Report a problem with WhisperSync
 labels: ["bug"]
 body:
   - type: markdown
@@ -51,5 +51,5 @@ body:
     attributes:
       label: Pre-flight
       options:
-        - label: I ran `python bormosync/engine/system_check.py` and attached relevant results
+        - label: I ran `python whispersync/engine/system_check.py` and attached relevant results
         - label: I searched existing issues for duplicates

@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an idea or improvement for BormoSync
+description: Suggest an idea or improvement for WhisperSync
 labels: ["enhancement"]
 body:
   - type: textarea

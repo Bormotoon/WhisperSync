@@ -13,9 +13,9 @@ Fixes #
 
 ## Checklist
 
-- [ ] `ruff check bormosync/ tests/` passes
-- [ ] `black --check bormosync/ tests/` passes
-- [ ] `mypy bormosync/ main.py` passes
+- [ ] `ruff check whispersync/ tests/` passes
+- [ ] `black --check whispersync/ tests/` passes
+- [ ] `mypy whispersync/ main.py` passes
 - [ ] `pytest` passes
 - [ ] Added/updated tests for the change
 - [ ] Updated docs / CHANGELOG where relevant

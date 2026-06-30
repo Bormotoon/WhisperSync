@@ -1,5 +1,5 @@
 # 🤖 CLAUDE CODE SYSTEM PROMPT & ARCHITECTURE MANIFEST
-**Project:** BormoSync — Advanced Audio/Video Synchronization Tool
+**Project:** WhisperSync — Advanced Audio/Video Synchronization Tool
 **Role:** You are an expert Python Audio/Video Engineer and PyQt6 GUI Developer.
 **Status:** Greenfield. Этот файл — единый источник правды (single source of truth) по архитектуре и плану.
 
@@ -9,7 +9,7 @@
 1. **Итеративность:** Не пиши весь проект сразу. Выполняй задачи строго по фазам (Phase). Завершив фазу — дойди до маркера `[ОСТАНОВКА]`, выведи короткий отчёт и запроси подтверждение перед следующей фазой.
 2. **Самопроверка:** Ты в среде выполнения. Любой написанный скрипт (`system_check.py`, тесты, демо) ОБЯЗАН быть запущен через терминал; читай `stdout`/`stderr` и чини ошибки до зелёного результата.
 3. **Локальность и приватность:** Вся обработка аудио/видео — СТРОГО локально. Никаких облачных API для транскрибации/аналитики/телеметрии. Единственное допустимое сетевое обращение — однократная загрузка весов модели Whisper (с поддержкой полностью офлайн-режима при заранее скачанной модели).
-4. **Структура:** Пакет `bormosync/`, логика разделена на `engine/` (вычисления) и `gui/` (интерфейс). Модульный, тестируемый код; бизнес-логика не зависит от Qt.
+4. **Структура:** Пакет `whispersync/`, логика разделена на `engine/` (вычисления) и `gui/` (интерфейс). Модульный, тестируемый код; бизнес-логика не зависит от Qt.
 5. **Качество кода:** Type hints везде; форматирование `black`, линт `ruff`, типы `mypy`. Публичные функции — с docstring. Без «магических чисел» — выноси в `config.py`.
 6. **Идемпотентность и кэш:** Транскрибация дорогая (GPU). Кэшируй результаты по хэшу входа; повторный прогон не должен пересчитывать то, что не менялось.
 7. **Без деструктива:** Инструмент НЕ рендерит и НЕ перезаписывает исходные медиа. Выход — только `.fcpxml` (+ опционально новые аудиофайлы в отдельной папке).
@@ -24,7 +24,7 @@
 
 **Почему через транскрипцию, а не waveform cross-correlation (как PluralEyes):** корреляция волновых форм отлично ловит короткий стартовый сдвиг, но при длинном дрейфе и сильно разном характере дорожек (камерный микрофон vs петличка, разный шум/АЧХ) плывёт. Совпадающие *слова* дают устойчивые смысловые «якоря» по всей длине записи и работают даже когда дорожки звучат по-разному. (Waveform-корреляция остаётся отличным fallback/уточнением — см. Backlog.)
 
-**Что делает BormoSync:** транскрибирует обе дорожки с word-level таймкодами → находит якоря → строит отображение времени `t_cam = offset + K · t_rec` → одной из трёх стратегий приводит звук диктофона к таймлайну камеры → выгружает `.fcpxml` (видео на `lane 1`, синхронизированный звук на `lane -1`), без рендеринга.
+**Что делает WhisperSync:** транскрибирует обе дорожки с word-level таймкодами → находит якоря → строит отображение времени `t_cam = offset + K · t_rec` → одной из трёх стратегий приводит звук диктофона к таймлайну камеры → выгружает `.fcpxml` (видео на `lane 1`, синхронизированный звук на `lane -1`), без рендеринга.
 
 ---
 
@@ -49,14 +49,14 @@
 * **Результат:** Экспорт в `.fcpxml` (по умолчанию v1.9; версия — параметр, поддержать 1.10/1.11) **без рендеринга медиа**.
 * **Качество time-stretch:** предпочтительно `ffmpeg atempo` (сохраняет высоту тона) или `rubberband` (opt); учесть, что `pydub.speedup` меняет высоту тона и непригоден для речи.
 * **Dev-инструменты:** `pytest`, `ruff`, `black`, `mypy`; опц. `pre-commit`, `rich`/`tqdm` (CLI-прогресс), `platformdirs` (пути кэша/конфига), `pydantic` (валидация конфига).
-* **Платформа:** Final Cut Pro — только macOS, но сам BormoSync кроссплатформенный (Win/Linux/macOS с NVIDIA GPU): он лишь генерирует `.fcpxml`, который открывают на Mac.
+* **Платформа:** Final Cut Pro — только macOS, но сам WhisperSync кроссплатформенный (Win/Linux/macOS с NVIDIA GPU): он лишь генерирует `.fcpxml`, который открывают на Mac.
 
 ---
 
 ## 🗂️ СТРУКТУРА ПРОЕКТА (целевое дерево)
 ```
-BormoSync/
-├── bormosync/
+WhisperSync/
+├── whispersync/
 │   ├── __init__.py
 │   ├── config.py            # настройки, дефолты, пути (cache/output)
 │   ├── models.py            # dataclasses: Word, Segment, Transcript, Anchor, AlignmentMap, MediaClip, SyncPlan, SyncResult
@@ -92,7 +92,7 @@ BormoSync/
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── pyproject.toml           # метаданные, entry points, конфиг ruff/black/mypy
-├── bormosync.spec           # PyInstaller
+├── whispersync.spec           # PyInstaller
 ├── README.md
 ├── CHANGELOG.md
 ├── LICENSE
@@ -101,7 +101,7 @@ BormoSync/
 
 ---
 
-## 🧱 МОДЕЛЬ ДАННЫХ (`bormosync/models.py`)
+## 🧱 МОДЕЛЬ ДАННЫХ (`whispersync/models.py`)
 Единые структуры, которыми обмениваются модули (dataclasses):
 ```python
 from dataclasses import dataclass, field
@@ -172,8 +172,8 @@ class SyncResult:
 
 ---
 
-## ⚙️ КОНФИГ (`bormosync/config.py`)
-Дефолты + загрузка из файла/CLI. Пример (через `--config` или `bormosync.json`):
+## ⚙️ КОНФИГ (`whispersync/config.py`)
+Дефолты + загрузка из файла/CLI. Пример (через `--config` или `whispersync.json`):
 ```jsonc
 {
   "model": "large-v3",          // large-v3 | medium | distil-large-v3
@@ -211,8 +211,8 @@ class SyncResult:
 ### Phase 1: Environment & Scaffolding
 - [x] Создать и активировать виртуальное окружение `venv`.
 - [x] Создать `requirements.txt` (`faster-whisper`, `pydub`, `ffmpeg-python`, `PyQt6`, `numpy`) и `requirements-dev.txt` (`pytest`, `ruff`, `black`, `mypy`); зафиксировать версии; установить.
-- [x] Развернуть дерево пакета `bormosync/` (`engine/`, `gui/`, `gui/widgets/`), `tests/`, `main.py` с пустыми модулями-заглушками.
-- [x] Добавить `pyproject.toml` (метаданные, entry points `bormosync`/`bormosync-gui`, конфиг `ruff`/`black`/`mypy`), `.gitignore` (venv, `__pycache__`, кэш, сборки, `*.fcpxml` в output), скелеты `README.md`, `LICENSE`, `CHANGELOG.md`.
+- [x] Развернуть дерево пакета `whispersync/` (`engine/`, `gui/`, `gui/widgets/`), `tests/`, `main.py` с пустыми модулями-заглушками.
+- [x] Добавить `pyproject.toml` (метаданные, entry points `whispersync`/`whispersync-gui`, конфиг `ruff`/`black`/`mypy`), `.gitignore` (venv, `__pycache__`, кэш, сборки, `*.fcpxml` в output), скелеты `README.md`, `LICENSE`, `CHANGELOG.md`.
 - [x] Написать `engine/system_check.py`. Скрипт проверяет:
    - Наличие `ffmpeg` и `ffprobe` в `PATH` (+ вывод версии).
    - `torch.cuda.is_available()` (критично) + имя GPU и объём VRAM.
@@ -304,10 +304,10 @@ class SyncResult:
 - **DoD:** перетащил папку видео + файл диктофона → выбрал стратегию (диаграмма обновилась) → запустил → UI не виснет, прогресс идёт, на выходе валидный `.fcpxml`; отмена работает.
 
 ### Phase 6: CLI & Packaging
-- [x] `bormosync/cli.py` + `main.py`: по умолчанию запуск GUI; при `--cli` — headless. Аргументы: `--cli`, `--video-dir`, `--audio-file`, `--strategy {1,2,3}`, `--output`, `--model`, `--device`, `--compute-type`, `--language`, `--fcpxml-version`, `--config`, `--cache/--no-cache`, `--dry-run`, `--json` (машинный отчёт), `--verbose`.
+- [x] `whispersync/cli.py` + `main.py`: по умолчанию запуск GUI; при `--cli` — headless. Аргументы: `--cli`, `--video-dir`, `--audio-file`, `--strategy {1,2,3}`, `--output`, `--model`, `--device`, `--compute-type`, `--language`, `--fcpxml-version`, `--config`, `--cache/--no-cache`, `--dry-run`, `--json` (машинный отчёт), `--verbose`.
 - [x] Headless-прогресс в stdout (`rich`/`tqdm`), осмысленные коды возврата; пример вызова в `--help` и README.
 - [x] Поддержка конфиг-файла (`--config`), слияние с дефолтами; CLI перекрывает файл.
-- [x] `bormosync.spec` для `PyInstaller`: hidden imports (`ctranslate2`, `faster_whisper`, `av`, `tokenizers`); сбор data-файлов `faster_whisper`; учёт CUDA-библиотек (cuBLAS/cuDNN) — для CUDA рекомендовать `--onedir`; локация/бандл `ffmpeg`; модель грузится в кэш при первом запуске.
+- [x] `whispersync.spec` для `PyInstaller`: hidden imports (`ctranslate2`, `faster_whisper`, `av`, `tokenizers`); сбор data-файлов `faster_whisper`; учёт CUDA-библиотек (cuBLAS/cuDNN) — для CUDA рекомендовать `--onedir`; локация/бандл `ffmpeg`; модель грузится в кэш при первом запуске.
 - [x] **[ОСТАНОВКА]** Прогнать полный сценарий из CLI на мини-наборе; приложить команду и вывод.
 - **DoD:** `python main.py --cli --video-dir … --audio-file … --strategy 1 --output out.fcpxml` отрабатывает end-to-end; `.spec` собирается (хотя бы `--onedir`).
 
@@ -358,7 +358,7 @@ class SyncResult:
 ---
 
 ## ✅ DEFINITION OF DONE (общий критерий MVP)
-Дана папка клипов камеры + один файл диктофона → BormoSync (GUI и CLI) строит валидный `.fcpxml`, который при импорте в FCP/DaVinci Resolve показывает видео на `lane 1` и синхронизированный звук диктофона на `lane -1`, с рассинхроном ≤ 1 кадра (≈ ≤ 40 мс) по всей длине для каждой из 3 стратегий; `system_check` проходит; `pytest` зелёный; исходные медиа не изменяются.
+Дана папка клипов камеры + один файл диктофона → WhisperSync (GUI и CLI) строит валидный `.fcpxml`, который при импорте в FCP/DaVinci Resolve показывает видео на `lane 1` и синхронизированный звук диктофона на `lane -1`, с рассинхроном ≤ 1 кадра (≈ ≤ 40 мс) по всей длине для каждой из 3 стратегий; `system_check` проходит; `pytest` зелёный; исходные медиа не изменяются.
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-BormoSync is in active development; security fixes target the latest `main`.
+WhisperSync is in active development; security fixes target the latest `main`.
 
 ## Reporting a Vulnerability
 
@@ -21,7 +21,7 @@ the fix and disclosure timeline.
 
 ## Scope notes
 
-BormoSync runs entirely locally. The only network access is a one-time download
+WhisperSync runs entirely locally. The only network access is a one-time download
 of the Whisper model weights from Hugging Face; there is no telemetry. Be mindful
 that generated `.fcpxml` files and exported transcripts contain `file://` paths
 and the transcribed text of your recordings — treat them as you would the source

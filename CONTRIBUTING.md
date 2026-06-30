@@ -1,26 +1,26 @@
-# Contributing to BormoSync
+# Contributing to WhisperSync
 
-Thanks for your interest in improving BormoSync! This guide explains how to set
+Thanks for your interest in improving WhisperSync! This guide explains how to set
 up a dev environment and the conventions we follow.
 
 ## Development setup
 
 ```bash
-git clone https://github.com/Bormotoon/BormoSync.git
-cd BormoSync
+git clone https://github.com/Bormotoon/WhisperSync.git
+cd WhisperSync
 python -m venv venv
 source venv/bin/activate            # Windows: venv\Scripts\activate
 pip install -r requirements-dev.txt # includes runtime deps + tooling
-python bormosync/engine/system_check.py
+python whispersync/engine/system_check.py
 ```
 
 You also need **ffmpeg** and **ffprobe** in your `PATH`.
 
 ## Project layout
 
-- `bormosync/engine/` — pure logic (transcription, matching, strategies, FCPXML).
+- `whispersync/engine/` — pure logic (transcription, matching, strategies, FCPXML).
   Business logic must not depend on Qt.
-- `bormosync/gui/` — PyQt6 interface (window, worker, widgets, theme).
+- `whispersync/gui/` — PyQt6 interface (window, worker, widgets, theme).
 - `tests/` — pytest suite (no GPU/ffmpeg required; heavy paths are covered with
   synthetic data and mocks).
 
@@ -29,9 +29,9 @@ You also need **ffmpeg** and **ffprobe** in your `PATH`.
 All of these must pass before a PR is merged (CI enforces them):
 
 ```bash
-ruff check bormosync/ tests/      # lint
-black --check bormosync/ tests/   # formatting (line length 100)
-mypy bormosync/ main.py           # type checking
+ruff check whispersync/ tests/      # lint
+black --check whispersync/ tests/   # formatting (line length 100)
+mypy whispersync/ main.py           # type checking
 pytest                            # tests
 ```
 

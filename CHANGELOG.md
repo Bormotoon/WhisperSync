@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to BormoSync will be documented in this file.
+All notable changes to WhisperSync will be documented in this file.
 
 ## [Unreleased]
 
@@ -103,7 +103,7 @@ All notable changes to BormoSync will be documented in this file.
   re-decoding the whole recording for every segment
 
 ### Added
-- Project scaffolding with full package structure (bormosync/engine/, gui/, widgets/)
+- Project scaffolding with full package structure (whispersync/engine/, gui/, widgets/)
 - Core data models: Word, Segment, Transcript, Anchor, AlignmentMap, MediaClip, SyncPlan, SyncResult
 - Configuration management with JSON config support and CLI overrides
 - System check utility (ffmpeg, CUDA, Python, dependencies, disk space)

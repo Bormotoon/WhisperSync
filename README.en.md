@@ -1,4 +1,4 @@
-# BormoSync — Advanced Audio/Video Synchronization Tool
+# WhisperSync — Advanced Audio/Video Synchronization Tool
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
@@ -10,9 +10,9 @@
 
 ---
 
-**BormoSync** synchronizes audio and video for dual-system recording: the camera
+**WhisperSync** synchronizes audio and video for dual-system recording: the camera
 films with a scratch audio track while an external recorder (lav mic, Zoom,
-Tascam) captures clean sound separately. BormoSync automatically finds the exact
+Tascam) captures clean sound separately. WhisperSync automatically finds the exact
 time mapping between the tracks and generates an FCPXML project for Final Cut Pro
 or DaVinci Resolve.
 
@@ -20,13 +20,13 @@ How it works: **transcription** → **anchor matching** → **K/offset regressio
 → **sync strategy** → **FCPXML export**.
 
 Using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2),
-BormoSync transcribes both audio streams with word-level timestamps, finds
+WhisperSync transcribes both audio streams with word-level timestamps, finds
 matching words (anchors) via sequence alignment, applies RANSAC regression to
 robustly estimate the linear clock drift (K = rate, offset = shift), then applies
 the best sync strategy for the recording conditions. The result is a render-free
 FCPXML that references the original media.
 
-![BormoSync GUI](docs/images/main_window.png)
+![WhisperSync GUI](docs/images/main_window.png)
 
 > Main window: drag-and-drop sources, strategy selection, a multi-track timeline
 > with live status, and a real-time log.
@@ -120,8 +120,8 @@ both. Great for understanding which strategy to pick before you run anything.
 ## Installation
 
 ```bash
-git clone https://github.com/Bormotoon/BormoSync.git
-cd BormoSync
+git clone https://github.com/Bormotoon/WhisperSync.git
+cd WhisperSync
 
 python -m venv venv
 source venv/bin/activate     # Linux/macOS
@@ -130,7 +130,7 @@ source venv/bin/activate     # Linux/macOS
 pip install -r requirements.txt
 
 # Verify the environment (ffmpeg, CUDA, Python, deps, disk)
-python bormosync/engine/system_check.py
+python whispersync/engine/system_check.py
 ```
 
 ## Usage
@@ -197,7 +197,7 @@ full list. CLI flags override the JSON config, which overrides defaults.
 
 ## Configuration
 
-BormoSync reads a JSON config via `--config config.json`. Priority:
+WhisperSync reads a JSON config via `--config config.json`. Priority:
 **CLI flags > JSON config > defaults**. Example:
 
 ```json
@@ -230,16 +230,16 @@ BormoSync reads a JSON config via `--config config.json`. Priority:
   `--language`, lower `anchor_min_confidence`, or a larger model.
 - **High residual** — try Strategy 2 (non-linear drift) or Strategy 4; verify
   anchors are spread across the whole length.
-- **Reset cache** — `rm -rf ~/.cache/bormosync/` or run with `--no-cache`.
+- **Reset cache** — `rm -rf ~/.cache/whispersync/` or run with `--no-cache`.
 
 ## Architecture
 
 ```
-BormoSync/
+WhisperSync/
 ├── main.py                  # Entry point (GUI / CLI dispatch)
-├── bormosync/
+├── whispersync/
 │   ├── cli.py               # argparse CLI
-│   ├── config.py            # BormoSyncConfig + JSON loader
+│   ├── config.py            # WhisperSyncConfig + JSON loader
 │   ├── models.py            # Word, Segment, Transcript, Anchor, SyncPlan...
 │   ├── engine/
 │   │   ├── pipeline.py      # End-to-end orchestration
@@ -263,13 +263,13 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md),
 opening a PR, make sure these pass:
 
 ```bash
-ruff check bormosync/ tests/
-black --check bormosync/ tests/
-mypy bormosync/ main.py
+ruff check whispersync/ tests/
+black --check whispersync/ tests/
+mypy whispersync/ main.py
 pytest
 ```
 
 ## License
 
-MIT License — Copyright (c) 2024-2025 BormoSync Contributors. See
+MIT License — Copyright (c) 2024-2025 WhisperSync Contributors. See
 [LICENSE](LICENSE).

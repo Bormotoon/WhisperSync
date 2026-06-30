@@ -29,13 +29,13 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Ruff (lint)
-        run: ruff check bormosync/ tests/
+        run: ruff check whispersync/ tests/
 
       - name: Black (format check)
-        run: black --check bormosync/ tests/
+        run: black --check whispersync/ tests/
 
       - name: Mypy (type check)
-        run: mypy bormosync/ main.py
+        run: mypy whispersync/ main.py
 
       - name: Pytest
         run: pytest -q
