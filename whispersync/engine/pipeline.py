@@ -773,6 +773,56 @@ def run_pipeline(
                 clips=_timeline_snapshot(),
             )
 
+        # --- extract voice-free camera ambience onto its own lane (optional) ---
+        # Strip the camera's own voice (which would double/echo the clean synced
+        # voice) but keep the room tone, on a lane below the synced audio.
+        if config.ambience_track:
+            from whispersync.engine import separation
+
+            repo_root = Path(__file__).resolve().parents[2]
+            if not separation.is_available(repo_root):
+                warnings.append(
+                    "Ambience track requested but the separation environment "
+                    "(.sep-venv) is missing — skipped."
+                )
+            else:
+                ambience_dir = output_path.parent / "ambience"
+                model_dir = repo_root / "models" / "separator"
+                ambient_lane = min((c.lane for c in audio_clips), default=-1) - 1
+                amb_clips: list[MediaClip] = []
+                src_clips = [video_clips[ci] for ci in range(n) if clip_camera[ci] == audio_ci]
+                for k, vclip in enumerate(src_clips):
+                    _notify(
+                        "processing",
+                        k / max(len(src_clips), 1),
+                        f"Extracting ambience {k + 1}/{len(src_clips)}: {vclip.path.name}",
+                    )
+                    cam_wav = extract_audio_to_wav(vclip.path, sample_rate=out_sr, mono=False)
+                    cleanup_paths.append(cam_wav)
+                    try:
+                        amb = separation.extract_ambience(
+                            cam_wav,
+                            ambience_dir,
+                            repo_root,
+                            config.ambience_model,
+                            model_dir=model_dir if model_dir.exists() else None,
+                        )
+                    except (RuntimeError, OSError) as e:
+                        warnings.append(f"{vclip.path.name}: ambience extraction failed ({e})")
+                        continue
+                    amb_clips.append(
+                        MediaClip(
+                            path=amb,
+                            kind="audio",
+                            offset=vclip.offset,
+                            in_point=0.0,
+                            duration=vclip.duration,
+                            lane=ambient_lane,
+                        )
+                    )
+                plan.clips.extend(amb_clips)
+                plan.total_duration = _timeline_end(plan.clips)
+
         # --- export ---
         _notify("exporting", 0.0, "Generating FCPXML...")
         generate_fcpxml(

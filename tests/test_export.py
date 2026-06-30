@@ -78,15 +78,19 @@ def test_generate_and_validate_fcpxml(tmp_path: Path) -> None:
     spine = root.find(".//spine")
     assert spine is not None
 
-    gap = spine.find("gap")
-    assert gap is not None
+    # New layout: the video clip is the primary-storyline element (directly in the
+    # spine, no lane), and the audio is a connected clip nested under it on lane -1.
+    spine_video = spine.findall("asset-clip")
+    assert len(spine_video) == 1, "the video clip should sit directly in the spine"
+    video_clip = spine_video[0]
+    assert video_clip.get("lane") is None, "primary-storyline clip carries no lane"
 
-    clips = gap.findall("asset-clip")
-    assert len(clips) == 2
+    connected = video_clip.findall("asset-clip")
+    assert len(connected) == 1, "the audio should be connected to the video clip"
+    assert connected[0].get("lane") == "-1"
 
-    lanes = {c.get("lane") for c in clips}
-    assert "1" in lanes
-    assert "-1" in lanes
+    # the audio's offset is relative to the parent's start (2s here)
+    clips = [video_clip, connected[0]]
 
     # every asset-clip must reference a declared asset
     asset_ids = {a.get("id") for a in root.findall(".//asset")}

@@ -84,6 +84,13 @@ PAUSE_DUCK_DB = -18.0
 PAUSE_DUCK_FADE_MS = 80
 PAUSE_DUCK_MIN_PAUSE_S = 0.6  # don't duck gaps shorter than this
 
+# Ambience track: run a source-separation model over the camera audio to strip the
+# camera's own (echoey, slightly-mis-synced) voice and keep only the room tone /
+# ambience, placed on its own lane next to the clean synced voice. Off by default.
+# The separator lives in the isolated ".sep-venv" environment (see separation.py);
+# MelBand-RoFormer Inst V2 is the chosen model (best ambience-detail retention).
+AMBIENCE_MODEL = "melband_roformer_inst_v2.ckpt"
+
 
 @dataclass
 class WhisperSyncConfig:
@@ -174,6 +181,10 @@ class WhisperSyncConfig:
     pause_duck_db: float = PAUSE_DUCK_DB
     pause_duck_fade_ms: int = PAUSE_DUCK_FADE_MS
     pause_duck_min_pause_s: float = PAUSE_DUCK_MIN_PAUSE_S
+    # Ambience track (off by default): extract voice-free camera ambience onto its own
+    # lane so the only voice is the clean synced one (no doubled/echoed voice).
+    ambience_track: bool = False
+    ambience_model: str = AMBIENCE_MODEL
 
     @property
     def resolved_cache_dir(self) -> Path:

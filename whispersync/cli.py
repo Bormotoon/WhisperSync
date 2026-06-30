@@ -121,6 +121,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Pause attenuation in dB: 0=off … large negative→silence (default: -18)",
     )
     parser.add_argument(
+        "--ambience-track",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Add a voice-free camera-ambience track (removes the camera's doubled "
+        "voice, keeps the room tone); needs the .sep-venv environment. Default: off.",
+    )
+    parser.add_argument(
         "--strategy",
         choices=[1, 2, 3, 4],
         default=1,
@@ -330,6 +337,8 @@ def main() -> None:
         overrides["pause_duck_enabled"] = args.pause_duck_enabled
     if args.pause_duck_db is not None:
         overrides["pause_duck_db"] = args.pause_duck_db
+    if args.ambience_track is not None:
+        overrides["ambience_track"] = args.ambience_track
 
     if args.no_cache:
         overrides["use_cache"] = False

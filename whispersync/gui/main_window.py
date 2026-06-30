@@ -188,6 +188,17 @@ class MainWindow(QMainWindow):
         options_layout.addRow(self.duck_db_label, duck_db_row)
         self.duck_db_label.setEnabled(self.duck_check.isChecked())
 
+        # Ambience track — strip the camera's own voice, keep the room tone, on its
+        # own lane (needs the separate .sep-venv environment). Off by default.
+        self.ambience_check = QCheckBox("Add camera-ambience track (no doubled voice)")
+        self.ambience_check.setChecked(self.config.ambience_track)
+        self.ambience_check.setToolTip(
+            "Run AI source separation on the camera audio to remove its own (echoey) "
+            "voice while keeping the ambience, on a separate lane. Requires the "
+            "'.sep-venv' environment (setup_sep_venv.sh)."
+        )
+        options_layout.addRow(self.ambience_check)
+
         left_layout.addWidget(options_group)
 
         self.btn_sync = QPushButton("SYNC")
@@ -401,6 +412,7 @@ class MainWindow(QMainWindow):
         # ducking filter zeroes the gain (apply_pause_ducking treats ≤ -120 as 0).
         db = self.duck_slider.value()
         self.config.pause_duck_db = -200.0 if db <= -60 else float(db)
+        self.config.ambience_track = self.ambience_check.isChecked()
 
         self.right_tabs.setCurrentIndex(0)  # show the Run tab during processing
         self.btn_sync.setEnabled(False)

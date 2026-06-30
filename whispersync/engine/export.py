@@ -8,7 +8,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from whispersync.engine.media import MediaInfo, path_to_file_uri
-from whispersync.models import SyncPlan
+from whispersync.models import MediaClip, SyncPlan
 
 logger = logging.getLogger(__name__)
 
@@ -172,31 +172,92 @@ def generate_fcpxml(
 
     spine = ET.SubElement(seq, "spine")
 
-    gap = ET.SubElement(
-        spine,
-        "gap",
-        name="Gap",
-        offset="0s",
-        start="0s",
-        duration=seq_dur,
-    )
+    # Video clips form the PRIMARY STORYLINE: they sit directly in the spine, in
+    # timeline order, with <gap> elements filling the time before the first clip and
+    # between non-contiguous clips (so each clip keeps its real synced position).
+    # Audio clips are CONNECTED clips, attached to the spine video clip that covers
+    # their start, with an offset/lane relative to that parent. This drops the old
+    # full-timeline gap placeholder so video lands on the main track on import.
+    video_clips = sorted((c for c in plan.clips if c.kind == "video"), key=lambda c: c.offset)
+    audio_clips = sorted((c for c in plan.clips if c.kind != "video"), key=lambda c: c.offset)
 
-    for clip in plan.clips:
-        path_str = str(clip.path.resolve())
-        ref_id = asset_map.get(path_str, "r2")
+    # Frame duration (seconds) of the sequence grid, used to align spine offsets.
+    frame_s = float(seq_fps.denominator) / float(seq_fps.numerator)
 
-        # All spine times are snapped to the sequence frame grid (offset rounded,
-        # duration floored so we never reference more media than the file holds).
-        ET.SubElement(
-            gap,
+    def _spine_clip(clip: MediaClip, offset_str: str) -> ET.Element:
+        return ET.SubElement(
+            spine,
             "asset-clip",
-            ref=ref_id,
-            lane=str(clip.lane),
+            ref=asset_map.get(str(clip.path.resolve()), "r2"),
             name=clip.path.stem,
-            offset=_frame_rational(clip.offset, seq_fps, "round"),
+            offset=offset_str,
             start=_frame_rational(clip.in_point, seq_fps, "round"),
             duration=_frame_rational(clip.duration, seq_fps, "floor"),
         )
+
+    # Lay the video clips end-to-end with gaps for the holes. The spine's own clock
+    # ("offset") is contiguous; each element's offset is where it begins on it.
+    spine_elems: list[tuple[float, float, ET.Element]] = []  # (start_s, end_s, el)
+    cursor = 0.0
+    for clip in video_clips:
+        if clip.offset > cursor + frame_s / 2:
+            gap_dur = clip.offset - cursor
+            ET.SubElement(
+                spine,
+                "gap",
+                name="Gap",
+                offset=_frame_rational(cursor, seq_fps, "round"),
+                start="0s",
+                duration=_frame_rational(gap_dur, seq_fps, "round"),
+            )
+            cursor = clip.offset
+        el = _spine_clip(clip, _frame_rational(cursor, seq_fps, "round"))
+        end = cursor + clip.duration
+        spine_elems.append((cursor, end, el))
+        cursor = end
+
+    if not spine_elems:
+        # No video (audio-only) — fall back to a single gap holding the audio so the
+        # document is still valid.
+        gap = ET.SubElement(spine, "gap", name="Gap", offset="0s", start="0s", duration=seq_dur)
+        for clip in audio_clips:
+            ET.SubElement(
+                gap,
+                "asset-clip",
+                ref=asset_map.get(str(clip.path.resolve()), "r2"),
+                lane=str(clip.lane),
+                name=clip.path.stem,
+                offset=_frame_rational(clip.offset, seq_fps, "round"),
+                start=_frame_rational(clip.in_point, seq_fps, "round"),
+                duration=_frame_rational(clip.duration, seq_fps, "floor"),
+            )
+    else:
+        # Attach each audio clip to the spine video clip covering its start; its
+        # offset is relative to that parent's own start time.
+        for clip in audio_clips:
+            parent = None
+            for start_s, end_s, el in spine_elems:
+                if start_s - frame_s <= clip.offset < end_s:
+                    parent = (start_s, el)
+                    break
+            if parent is None:
+                # Before the first / after the last video — clamp to the nearest.
+                parent = (spine_elems[0][0], spine_elems[0][2])
+            parent_start, parent_el = parent
+            rel = max(0.0, clip.offset - parent_start)
+            # Connected clip: `offset` is its position on the PARENT's local timeline
+            # (parent's own offset + rel), `start` is the clip's source in-point.
+            parent_offset_s = parent_start  # spine offset == timeline start here
+            ET.SubElement(
+                parent_el,
+                "asset-clip",
+                ref=asset_map.get(str(clip.path.resolve()), "r2"),
+                lane=str(clip.lane),
+                name=clip.path.stem,
+                offset=_frame_rational(parent_offset_s + rel, seq_fps, "round"),
+                start=_frame_rational(clip.in_point, seq_fps, "round"),
+                duration=_frame_rational(clip.duration, seq_fps, "floor"),
+            )
 
     tree = ET.ElementTree(root)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,13 +287,15 @@ def validate_fcpxml(path: Path) -> bool:
             logger.error("No <spine> found")
             return False
 
-        gap = spine.find("gap")
-        if gap is None:
-            logger.error("No <gap> found in spine")
+        # Video clips now sit directly in the spine (primary storyline); audio is
+        # connected to them. A valid document has at least one asset-clip somewhere
+        # in the spine (directly, or nested under a clip / gap).
+        clips = spine.findall(".//asset-clip")
+        if not clips:
+            logger.error("No <asset-clip> found in spine")
             return False
 
-        clips = gap.findall("asset-clip")
-        logger.info("FCPXML valid: %d asset-clips in spine", len(clips))
+        logger.info("FCPXML valid: %d asset-clip(s) in spine", len(clips))
         return True
 
     except ET.ParseError as e:
