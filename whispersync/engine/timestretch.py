@@ -64,6 +64,13 @@ def apply_atempo_segment(
     # atempo=p changes length: out = in / p, so the output is duration/factor long.
     out_duration = duration / factor if factor else duration
     chain += edge_fade_filters(out_duration, fade_ms)
+    # atempo's actual output is a few ms SHORTER than duration/factor (filter priming
+    # / fractional-sample rounding) — a consistent ~-3 ms/piece bias. With hundreds
+    # of pieces concatenated by assemble_continuous, that accumulates into seconds of
+    # progressive A/V drift. Force every piece to its exact intended length: pad any
+    # shortfall with silence, then hard-trim to out_duration so concatenation is
+    # sample-exact regardless of atempo rounding.
+    chain += ["apad", f"atrim=0:{out_duration:.6f}", "asetpts=PTS-STARTPTS"]
     af = ",".join(chain)
     # -ss before -i enables fast input seeking (sample-accurate for PCM/WAV),
     # so cutting many segments doesn't re-decode the whole file each time.
@@ -225,50 +232,57 @@ def assemble_continuous(
     if not segment_paths:
         return generate_silence(output_path, total_duration, sample_rate)
 
-    inputs: list[str] = []
-    n = 0
+    # Concatenate via the concat *demuxer* (a single -i reading the list file),
+    # not by opening every segment as its own -i input: a clip can contain
+    # thousands of pieces and one fd per input blows past the open-files limit
+    # ("Too many open files"). The demuxer streams the segments one at a time.
+    #
+    # An optional lead-silence WAV is generated up front and prepended to the
+    # list. Output is resampled to the target rate/mono (segments inherit the
+    # recording's rate, which may differ), then padded+trimmed to the exact clip
+    # length so phrases are never clipped.
+    list_entries: list[Path] = list(segment_paths)
+    lead_path: Path | None = None
     if lead_silence > 1e-3:
-        inputs += [
-            "-f",
-            "lavfi",
-            "-t",
-            f"{lead_silence:.6f}",
-            "-i",
-            f"anullsrc=r={sample_rate}:cl=mono",
-        ]
-        n += 1
-    for p in segment_paths:
-        inputs += ["-i", str(p)]
-        n += 1
+        lead_path = output_path.parent / f".lead_{output_path.stem}.wav"
+        generate_silence(lead_path, lead_silence, sample_rate)
+        list_entries.insert(0, lead_path)
 
-    # Normalise every input to the target rate/mono so concat accepts them, glue
-    # in order, then pad+trim to the exact clip length.
-    parts = [f"[{j}:a]aresample={sample_rate},aformat=channel_layouts=mono[n{j}]" for j in range(n)]
-    norm = "".join(f"[n{j}]" for j in range(n))
-    parts.append(
-        f"{norm}concat=n={n}:v=0:a=1[c];"
-        f"[c]apad,atrim=0:{total_duration:.6f},asetpts=PTS-STARTPTS[out]"
-    )
-    cmd = [
-        "ffmpeg",
-        "-y",
-        *inputs,
-        "-filter_complex",
-        ";".join(parts),
-        "-map",
-        "[out]",
-        "-ar",
-        str(sample_rate),
-        "-ac",
-        "1",
-        "-acodec",
-        "pcm_s16le",
-        str(output_path),
-    ]
-    logger.info("Assembling continuous clip (%d pieces) → %s", len(segment_paths), output_path)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg continuous assembly failed: {result.stderr[-800:]}")
+    fd, list_path = tempfile.mkstemp(suffix=".txt", prefix="whispersync_concat_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            for p in list_entries:
+                # Single quotes in paths must be escaped for the concat demuxer.
+                escaped = str(p.resolve()).replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_path,
+            "-af",
+            f"aresample={sample_rate},aformat=channel_layouts=mono,"
+            f"apad,atrim=0:{total_duration:.6f},asetpts=PTS-STARTPTS",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            "1",
+            "-acodec",
+            "pcm_s16le",
+            str(output_path),
+        ]
+        logger.info("Assembling continuous clip (%d pieces) → %s", len(segment_paths), output_path)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg continuous assembly failed: {result.stderr[-800:]}")
+    finally:
+        os.unlink(list_path)
+        if lead_path is not None:
+            lead_path.unlink(missing_ok=True)
     return output_path
 
 

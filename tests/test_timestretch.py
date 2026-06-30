@@ -77,3 +77,20 @@ def test_edge_fade_clamped_to_half_segment() -> None:
     assert len(filters) == 2
     in_dur = float(filters[0].split("d=")[1])
     assert in_dur <= 0.05 + 1e-9
+
+
+def test_atempo_segment_filter_locks_exact_length() -> None:
+    # Regression guard: apply_atempo_segment must hard-trim each piece to its exact
+    # intended output length (duration/factor). atempo otherwise outputs ~3ms short
+    # per piece, which accumulates into seconds of A/V drift across the hundreds of
+    # pieces the per-phrase / per-anchor strategies produce. We assert the filter
+    # chain ends with apad + atrim to the exact out_duration.
+    import inspect
+
+    from whispersync.engine import timestretch
+
+    src = inspect.getsource(timestretch.apply_atempo_segment)
+    assert "apad" in src and "atrim=0:" in src, (
+        "apply_atempo_segment must pad+trim each piece to an exact length so "
+        "concatenated pieces do not accumulate atempo rounding drift"
+    )

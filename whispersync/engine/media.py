@@ -141,6 +141,47 @@ def extract_audio_to_wav(
     return output_path
 
 
+def extract_audio_window(
+    input_path: Path,
+    output_path: Path,
+    start: float,
+    duration: float,
+    sample_rate: int = 16000,
+    mono: bool = True,
+) -> Path:
+    """Cut a short audio window ``[start, start+duration]`` to WAV.
+
+    Like ``extract_audio_to_wav`` but seeks to an arbitrary timestamp — ``-ss``
+    and ``-t`` go BEFORE ``-i`` for fast, sample-accurate seeking on PCM/WAV (the
+    same convention as ``timestretch.extract_segment``). Used by the acoustic
+    refine pass to pull matching camera/recorder windows for cross-correlation.
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{max(0.0, start):.6f}",
+        "-t",
+        f"{duration:.6f}",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        str(sample_rate),
+    ]
+    if mono:
+        cmd.extend(["-ac", "1"])
+    cmd.append(str(output_path))
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg window extraction failed: {result.stderr}")
+
+    return output_path
+
+
 def path_to_file_uri(path: Path) -> str:
     absolute = path.resolve()
     encoded = quote(str(absolute), safe="/:")

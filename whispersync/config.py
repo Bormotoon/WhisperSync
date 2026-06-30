@@ -37,6 +37,33 @@ WHISPER_TEMPERATURE_LADDER = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 # Which source provides the audio sample-rate reference for FCPXML time values.
 TIMEBASE_SOURCES = ("camera", "recorder")
 
+# Word-matching backend. "legacy" = single difflib LCS (original). "dtw" = banded
+# DTW over word indices, robust to repeated takes on both sides (both camera and
+# recorder may contain re-takes/drafts; a single LCS can latch onto the wrong one).
+ALIGN_MODES = ("legacy", "dtw")
+
+# DTW (Tier 1) cost/band parameters. Band is a Sakoe-Chiba half-width in *word
+# indices* around a coarse diagonal; cost mixes token mismatch with a penalty for
+# straying off that diagonal (the slope term is what defeats wrong-take latching).
+DTW_BAND_MIN = 8
+DTW_BAND_MAX = 400
+DTW_BAND_MARGIN_FRAC = 1.0  # fraction of match_window_margin folded into the band
+DTW_TOKEN_WEIGHT = 1.0
+DTW_SLOPE_WEIGHT = 0.25
+DTW_SUBST_COST = 1.0
+DTW_GAP_COST = 0.6
+DTW_MIN_ANCHOR_CONF = 0.5
+
+# Acoustic refine (Tier 2, "Flex Time"): sample a grid across the clip, measure the
+# residual recorder↔camera lag by GCC-PHAT cross-correlation, and correct the
+# anchor times sub-sample. Off by default. Sharpness = peak/median(|cc|); measured
+# speech windows score 240–335 and silence/mismatch ≈12, so 50 is a safe gate.
+ACOUSTIC_GRID_S = 25.0
+ACOUSTIC_WINDOW_S = 7.0
+ACOUSTIC_MAX_LAG_S = 1.0
+ACOUSTIC_MIN_SHARPNESS = 50.0
+GCC_EPS = 1e-8
+
 
 @dataclass
 class WhisperSyncConfig:
@@ -92,6 +119,24 @@ class WhisperSyncConfig:
     match_window_margin: float = MATCH_WINDOW_MARGIN
     seed_max_occurrences: int = SEED_MAX_OCCURRENCES
     seed_bin_width: float = SEED_BIN_WIDTH
+    # Word-matching backend (see ALIGN_MODES). "legacy" preserves the original
+    # difflib behaviour; "dtw" uses the repeat-robust banded DTW in engine/dtw.py.
+    align_mode: str = "legacy"
+    dtw_band_min: int = DTW_BAND_MIN
+    dtw_band_max: int = DTW_BAND_MAX
+    dtw_band_margin_frac: float = DTW_BAND_MARGIN_FRAC
+    dtw_token_weight: float = DTW_TOKEN_WEIGHT
+    dtw_slope_weight: float = DTW_SLOPE_WEIGHT
+    dtw_subst_cost: float = DTW_SUBST_COST
+    dtw_gap_cost: float = DTW_GAP_COST
+    dtw_min_anchor_conf: float = DTW_MIN_ANCHOR_CONF
+    # Acoustic refine (Tier 2). Off by default; enriches anchor times via GCC-PHAT.
+    acoustic_refine: bool = False
+    acoustic_grid_s: float = ACOUSTIC_GRID_S
+    acoustic_window_s: float = ACOUSTIC_WINDOW_S
+    acoustic_max_lag_s: float = ACOUSTIC_MAX_LAG_S
+    acoustic_min_sharpness: float = ACOUSTIC_MIN_SHARPNESS
+    gcc_eps: float = GCC_EPS
 
     @property
     def resolved_cache_dir(self) -> Path:
