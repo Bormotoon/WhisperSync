@@ -95,6 +95,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Save full transcripts (JSON + SRT) to output/transcripts/ (default: on)",
     )
     parser.add_argument(
+        "--boundary-flex",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Acoustically refine each piece's start by cross-correlation for "
+        "sub-frame lip-sync (default: off). Adds extra processing.",
+    )
+    parser.add_argument(
+        "--pause-duck",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="pause_duck_enabled",
+        help="Attenuate inter-phrase pauses to hide ambience desync (default: off)",
+    )
+    parser.add_argument(
+        "--pause-duck-db",
+        type=float,
+        default=None,
+        help="Pause attenuation in dB: 0=off … large negative→silence (default: -18)",
+    )
+    parser.add_argument(
         "--strategy",
         choices=[1, 2, 3, 4],
         default=1,
@@ -296,6 +316,12 @@ def main() -> None:
         overrides["crossfade_ms"] = args.crossfade_ms
     if args.save_transcripts is not None:
         overrides["save_transcripts"] = args.save_transcripts
+    if args.boundary_flex is not None:
+        overrides["boundary_flex"] = args.boundary_flex
+    if args.pause_duck_enabled is not None:
+        overrides["pause_duck_enabled"] = args.pause_duck_enabled
+    if args.pause_duck_db is not None:
+        overrides["pause_duck_db"] = args.pause_duck_db
 
     if args.no_cache:
         overrides["use_cache"] = False

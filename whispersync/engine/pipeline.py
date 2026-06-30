@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from whispersync.config import WhisperSyncConfig
+from whispersync.engine.acoustic import refine_piece_boundaries
 from whispersync.engine.export import generate_fcpxml
 from whispersync.engine.matcher import align
 from whispersync.engine.media import MediaInfo, extract_audio_to_wav, probe
@@ -24,6 +25,7 @@ from whispersync.engine.naming import natural_key
 from whispersync.engine.strategies import get_strategy
 from whispersync.engine.timestretch import (
     apply_atempo_segment,
+    apply_pause_ducking,
     assemble_continuous,
     extract_segment,
 )
@@ -336,6 +338,36 @@ def clip_pieces(
     return lead, pieces
 
 
+def pause_spans_local(
+    am: AlignmentMap, clip_duration: float, gap_threshold: float, min_pause: float
+) -> list[tuple[float, float]]:
+    """Inter-phrase pause spans in LOCAL (camera) time for the rendered clip.
+
+    Anchors are sorted by camera time; a gap between consecutive anchors larger than
+    ``gap_threshold`` is a pause. Spans shorter than ``min_pause`` are dropped (not
+    worth ducking). Also covers the head/tail of the clip before the first / after
+    the last anchor. Returned spans are clamped to ``[0, clip_duration]`` and sorted.
+    """
+    cam_times = sorted(a.cam_time for a in am.anchors)
+    if not cam_times:
+        return []
+    spans: list[tuple[float, float]] = []
+    if cam_times[0] > min_pause:
+        spans.append((0.0, cam_times[0]))
+    for t0, t1 in zip(cam_times, cam_times[1:], strict=False):
+        if t1 - t0 > gap_threshold:
+            spans.append((t0, t1))
+    if clip_duration - cam_times[-1] > min_pause:
+        spans.append((cam_times[-1], clip_duration))
+    out: list[tuple[float, float]] = []
+    for a, b in spans:
+        a = max(0.0, a)
+        b = min(clip_duration, b)
+        if b - a >= min_pause:
+            out.append((a, b))
+    return out
+
+
 def _timeline_end(clips: list[MediaClip]) -> float:
     return max((c.offset + c.duration for c in clips), default=0.0)
 
@@ -519,8 +551,19 @@ def run_pipeline(
         audio_clips: list[MediaClip] = []
         audio_speed: list[float] = []
         audio_track: list[str] = []
-        # (audio_clip_index, recorder_path, lead_silence, pieces, clip_duration)
-        render_jobs: list[tuple[int, Path, float, list[tuple[float, float, float]], float]] = []
+
+        @dataclass
+        class RenderJob:
+            clip_idx: int
+            rec_path: Path
+            lead: float
+            pieces: list[tuple[float, float, float]]
+            duration: float
+            cam_audio: Path | None  # camera clip audio (mono 16k), for Boundary Flex
+            rec_duration: float
+            pauses: list[tuple[float, float]]  # local-time pause spans, for ducking
+
+        render_jobs: list[RenderJob] = []
 
         def _add_job(vclip: MediaClip, am: AlignmentMap, ri: int, lane: int) -> None:
             lead, pieces = clip_pieces(
@@ -541,8 +584,30 @@ def run_pipeline(
             )
             audio_speed.append(1.0 / am.k if am.k else 1.0)
             audio_track.append(label)
+
+            # Camera clip audio is only needed for Boundary Flex; extract once here.
+            cam_audio: Path | None = None
+            if config.boundary_flex:
+                cam_audio = extract_audio_to_wav(vclip.path)
+                cleanup_paths.append(cam_audio)
+            pauses = (
+                pause_spans_local(
+                    am, vclip.duration, config.phrase_gap_threshold, config.pause_duck_min_pause_s
+                )
+                if config.pause_duck_enabled
+                else []
+            )
             render_jobs.append(
-                (len(audio_clips) - 1, audio_files[ri], lead, pieces, vclip.duration)
+                RenderJob(
+                    clip_idx=len(audio_clips) - 1,
+                    rec_path=audio_files[ri],
+                    lead=lead,
+                    pieces=pieces,
+                    duration=vclip.duration,
+                    cam_audio=cam_audio,
+                    rec_duration=rec_infos[ri].duration,
+                    pauses=pauses,
+                )
             )
 
         for ci in range(n):
@@ -593,7 +658,8 @@ def run_pipeline(
         # Small length-preserving fades declick the seams between stretched pieces.
         fade_ms = config.crossfade_ms if config.crossfade_enabled else 0
         n_jobs = max(len(render_jobs), 1)
-        for j, (clip_idx, rec_path, lead, pieces, dur) in enumerate(render_jobs):
+        for j, job in enumerate(render_jobs):
+            clip_idx = job.clip_idx
             audio_status[clip_idx] = "working"
             _notify(
                 "processing",
@@ -605,17 +671,47 @@ def run_pipeline(
             # the system /tmp — /tmp may be small or on a full disk.
             with tempfile.TemporaryDirectory(prefix="whispersync_seg_", dir=audio_synced_dir) as td:
                 tdp = Path(td)
-                seg_paths: list[Path] = []
+                pieces = job.pieces
+                # Boundary Flex: acoustically nudge each piece's recorder start so
+                # speech lands under the picture to sub-frame accuracy.
+                if config.boundary_flex and job.cam_audio is not None:
+                    pieces = refine_piece_boundaries(
+                        pieces,
+                        job.lead,
+                        job.cam_audio,
+                        job.rec_path,
+                        job.duration,
+                        job.rec_duration,
+                        config,
+                        tmp_dir=tdp,
+                    )
+                seg_paths = []
                 for k, (rec_start, rec_dur, factor) in enumerate(pieces):
                     if abs(factor - 1.0) > 1e-6:
                         sp = apply_atempo_segment(
-                            rec_path, tdp, rec_start, rec_dur, factor, k, fade_ms=fade_ms
+                            job.rec_path, tdp, rec_start, rec_dur, factor, k, fade_ms=fade_ms
                         )
                     else:
-                        sp = extract_segment(rec_path, tdp, rec_start, rec_dur, k, fade_ms=fade_ms)
+                        sp = extract_segment(
+                            job.rec_path, tdp, rec_start, rec_dur, k, fade_ms=fade_ms
+                        )
                     seg_paths.append(sp)
                 out = audio_synced_dir / f"synced_{clip_idx:03d}.wav"
-                assemble_continuous(seg_paths, lead, dur, out_sr, out)
+                # Duck inter-phrase pauses (if enabled) on an intermediate file, then
+                # the ducked result becomes the final output.
+                if config.pause_duck_enabled and job.pauses:
+                    raw = tdp / f"raw_{clip_idx:03d}.wav"
+                    assemble_continuous(seg_paths, job.lead, job.duration, out_sr, raw)
+                    apply_pause_ducking(
+                        raw,
+                        out,
+                        job.pauses,
+                        config.pause_duck_db,
+                        config.pause_duck_fade_ms,
+                        out_sr,
+                    )
+                else:
+                    assemble_continuous(seg_paths, job.lead, job.duration, out_sr, out)
             audio_clips[clip_idx].path = out
             audio_clips[clip_idx].in_point = 0.0
             audio_status[clip_idx] = "done"

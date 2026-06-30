@@ -30,6 +30,78 @@ def edge_fade_filters(out_duration: float, fade_ms: int) -> list[str]:
     ]
 
 
+def _duck_pause_expr(a: float, b: float, duck_lin: float, fade: float) -> str:
+    """A single ``volume`` expression (eval=frame) for ONE pause [a, b]: 1.0 outside
+    [a-fade, b+fade], a linear ramp 1→duck on [a-fade, a], flat ``duck_lin`` on
+    [a, b], and a ramp duck→1 on [b, b+fade].
+
+    One filter per pause keeps each expression tiny; the pipeline chains them, which
+    ffmpeg handles far better than a single product expression over many pauses (a
+    huge expression overflows the filtergraph parser)."""
+    d = duck_lin
+    ramp_in = f"(1-(1-{d:.6f})*(t-({a - fade:.4f}))/{fade:.4f})"
+    ramp_out = f"({d:.6f}+(1-{d:.6f})*(t-({b:.4f}))/{fade:.4f})"
+    return (
+        f"if(lt(t,{a - fade:.4f}),1,"
+        f"if(lt(t,{a:.4f}),{ramp_in},"
+        f"if(lt(t,{b:.4f}),{d:.6f},"
+        f"if(lt(t,{b + fade:.4f}),{ramp_out},1))))"
+    )
+
+
+def apply_pause_ducking(
+    input_path: Path,
+    output_path: Path,
+    pauses: list[tuple[float, float]],
+    duck_db: float,
+    fade_ms: int,
+    sample_rate: int,
+) -> Path:
+    """Attenuate the given ``pauses`` (local-time [start, end] spans, seconds) by
+    ``duck_db`` decibels with an equal-time linear fade at each edge.
+
+    ``duck_db`` 0 = no change; -inf (or very negative) = full silence. Speech regions
+    are left at unity gain. A no-op copy is returned when there is nothing to duck.
+    """
+    fade = max(fade_ms, 1) / 1000.0
+    # Merge/parameterize: drop degenerate spans; clamp fades that would overlap speech.
+    spans = [(a, b) for a, b in pauses if b - a > 1e-3]
+    if not spans or duck_db >= 0.0:
+        # Nothing to do — straight copy so callers always get an output file.
+        cmd = ["ffmpeg", "-y", "-i", str(input_path), "-c", "copy", str(output_path)]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg pause-duck copy failed: {result.stderr}")
+        return output_path
+
+    duck_lin = 0.0 if duck_db <= -120.0 else 10.0 ** (duck_db / 20.0)
+    # One small volume filter per pause, chained (commas). A single combined
+    # expression over all pauses overflows ffmpeg's filtergraph parser.
+    chain = ",".join(
+        f"volume=volume='{_duck_pause_expr(a, b, duck_lin, fade)}':eval=frame" for a, b in spans
+    )
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-af",
+        chain,
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-acodec",
+        "pcm_s16le",
+        str(output_path),
+    ]
+    logger.info("Pause-ducking %d pause(s) by %.1f dB", len(spans), duck_db)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg pause-duck failed: {result.stderr[-800:]}")
+    return output_path
+
+
 def apply_atempo(input_path: Path, output_path: Path, factor: float) -> Path:
     chain = build_atempo_chain(factor)
     af = ",".join(chain)

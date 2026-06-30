@@ -263,3 +263,89 @@ def refine_anchors(
             monotonic.append(a)
             last_cam, last_rec = a.cam_time, a.rec_time
     return monotonic
+
+
+# (rec_start, rec_in_duration, atempo_factor) — the piece tuple produced by clip_pieces.
+Piece = tuple[float, float, float]
+
+
+def refine_piece_boundaries(
+    pieces: list[Piece],
+    lead: float,
+    cam_audio_wav: Path,
+    rec_audio_path: Path,
+    clip_duration: float,
+    rec_duration: float,
+    config: WhisperSyncConfig,
+    tmp_dir: Path | None = None,
+) -> list[Piece]:
+    """Acoustically nudge each piece's recorder start so its speech lands under the
+    picture, independent of Whisper's word timings ("Boundary Flex").
+
+    Pieces are contiguous in OUTPUT (camera) time, beginning at ``lead``: piece i's
+    local start is ``lead + sum(out_dur[<i])`` where ``out_dur = rec_dur / factor``.
+    For each piece we cross-correlate a short camera window at that local time against
+    the recorder window at the piece's current ``rec_start``; if the peak is sharp and
+    the measured residual exceeds the deadband, we shift ``rec_start`` by it (clamped).
+    The piece's duration/factor are left unchanged, so the exact-length contract and
+    the overall warp are preserved — only WHERE in the recorder we cut from moves.
+    """
+    if not pieces:
+        return pieces
+
+    win = config.flex_window_s
+    own_tmp = tmp_dir is None
+    if own_tmp:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="whispersync_flex_"))
+    assert tmp_dir is not None
+
+    refined: list[Piece] = []
+    n_shifted = 0
+    try:
+        local = lead
+        for idx, (rec_start, rec_dur, factor) in enumerate(pieces):
+            out_dur = rec_dur / factor if factor else rec_dur
+            # Probe a window centered a little into the piece (avoid the seam itself).
+            probe = min(out_dur, win)
+            cam_mid = local + probe / 2.0
+            rec_mid = rec_start + min(rec_dur, win) / 2.0
+            corr = 0.0
+            if (
+                win / 2.0 <= cam_mid <= clip_duration - win / 2.0
+                and win / 2.0 <= rec_mid <= rec_duration - win / 2.0
+            ):
+                cam_win = tmp_dir / f"flex_cam_{idx:05d}.wav"
+                rec_win = tmp_dir / f"flex_rec_{idx:05d}.wav"
+                try:
+                    extract_audio_window(
+                        cam_audio_wav, cam_win, cam_mid - win / 2.0, win, _REFINE_SR
+                    )
+                    extract_audio_window(
+                        rec_audio_path, rec_win, rec_mid - win / 2.0, win, _REFINE_SR
+                    )
+                    cam_sig, _ = read_wav_mono16k(cam_win)
+                    rec_sig, _ = read_wav_mono16k(rec_win)
+                    lag_s, sharp = gcc_phat(
+                        cam_sig, rec_sig, _REFINE_SR, config.acoustic_max_lag_s, config.gcc_eps
+                    )
+                    # -lag_s = seconds to add to the recorder read time (see _measure_grid).
+                    if sharp >= config.flex_min_sharpness and abs(lag_s) > config.flex_deadband_s:
+                        corr = max(-config.flex_max_shift_s, min(config.flex_max_shift_s, -lag_s))
+                        n_shifted += 1
+                except (RuntimeError, ValueError) as e:
+                    logger.debug("flex boundary %d failed: %s", idx, e)
+                finally:
+                    cam_win.unlink(missing_ok=True)
+                    rec_win.unlink(missing_ok=True)
+            # Keep the shifted start within the recorder bounds.
+            new_start = max(0.0, min(rec_start + corr, rec_duration - rec_dur))
+            refined.append((new_start, rec_dur, factor))
+            local += out_dur
+    finally:
+        if own_tmp:
+            import shutil
+
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    logger.info("Boundary Flex: nudged %d/%d piece starts", n_shifted, len(pieces))
+    return refined

@@ -64,6 +64,26 @@ ACOUSTIC_MAX_LAG_S = 1.0
 ACOUSTIC_MIN_SHARPNESS = 50.0
 GCC_EPS = 1e-8
 
+# Boundary Flex: acoustically refine each rendered piece's recorder start time by
+# GCC-PHAT (camera audio ↔ recorder audio) so speech lands under the picture to
+# sub-frame accuracy, independent of Whisper's ±50–100ms word timings. A piece's
+# start is nudged only when the measurement is confident (sharpness gate) AND the
+# residual exceeds a deadband (below it, the correction is within GCC noise and
+# would inject jitter rather than remove it). Off by default.
+FLEX_WINDOW_S = 4.0  # cross-correlation window per boundary
+FLEX_MIN_SHARPNESS = 80.0  # stricter than the grid gate — small windows need a clear peak
+FLEX_DEADBAND_S = 0.025  # ignore corrections within measurement noise (~25 ms)
+FLEX_MAX_SHIFT_S = 0.15  # clamp any single boundary nudge
+
+# Pause ducking: attenuate the recorder audio during inter-phrase pauses (gaps
+# between speech blocks in the transcript) so a slightly mis-synced ambience/room
+# tone in those gaps is inaudible. Gain is in dB (0 = no change … -inf = full
+# silence); a short equal-power fade at each pause edge avoids clicks. Off by
+# default; the gap that counts as a pause reuses phrase_gap_threshold.
+PAUSE_DUCK_DB = -18.0
+PAUSE_DUCK_FADE_MS = 80
+PAUSE_DUCK_MIN_PAUSE_S = 0.6  # don't duck gaps shorter than this
+
 
 @dataclass
 class WhisperSyncConfig:
@@ -137,6 +157,19 @@ class WhisperSyncConfig:
     acoustic_max_lag_s: float = ACOUSTIC_MAX_LAG_S
     acoustic_min_sharpness: float = ACOUSTIC_MIN_SHARPNESS
     gcc_eps: float = GCC_EPS
+    # Boundary Flex (off by default): acoustically nudge each piece's recorder start
+    # so speech lands under the picture to sub-frame accuracy.
+    boundary_flex: bool = False
+    flex_window_s: float = FLEX_WINDOW_S
+    flex_min_sharpness: float = FLEX_MIN_SHARPNESS
+    flex_deadband_s: float = FLEX_DEADBAND_S
+    flex_max_shift_s: float = FLEX_MAX_SHIFT_S
+    # Pause ducking (off by default): attenuate inter-phrase pauses by pause_duck_db
+    # (0 dB = off … -inf = full silence) to hide ambience desync in gaps.
+    pause_duck_enabled: bool = False
+    pause_duck_db: float = PAUSE_DUCK_DB
+    pause_duck_fade_ms: int = PAUSE_DUCK_FADE_MS
+    pause_duck_min_pause_s: float = PAUSE_DUCK_MIN_PAUSE_S
 
     @property
     def resolved_cache_dir(self) -> Path:
