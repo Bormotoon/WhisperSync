@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from bormosync.engine.media import build_atempo_chain
+from whispersync.engine.media import build_atempo_chain
 
 logger = logging.getLogger(__name__)
 

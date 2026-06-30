@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from bormosync.engine.naming import group_sequences, natural_key, split_index
+from whispersync.engine.naming import group_sequences, natural_key, split_index
 
 
 def test_natural_sort_orders_numbers_numerically() -> None:

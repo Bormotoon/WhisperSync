@@ -22,8 +22,8 @@ from typing import Any
 # Must be set before faster_whisper/huggingface_hub import.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-from bormosync.config import WHISPER_TEMPERATURE_LADDER, BormoSyncConfig
-from bormosync.models import Segment, Transcript, Word
+from whispersync.config import WHISPER_TEMPERATURE_LADDER, WhisperSyncConfig
+from whispersync.models import Segment, Transcript, Word
 
 try:
     import torch
@@ -93,7 +93,7 @@ def _is_cuda_oom(exc: BaseException) -> bool:
 
 
 class WhisperEngine:
-    def __init__(self, config: BormoSyncConfig) -> None:
+    def __init__(self, config: WhisperSyncConfig) -> None:
         self.config = config
         self._model: Any = None
         self._device: str = resolve_device(config.device)
@@ -263,7 +263,7 @@ class WhisperEngine:
         return transcript
 
     @staticmethod
-    def _cache_key(audio_path: Path, config: BormoSyncConfig) -> str:
+    def _cache_key(audio_path: Path, config: WhisperSyncConfig) -> str:
         stat = audio_path.stat()
         parts = "|".join(
             [

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bormosync.config import BormoSyncConfig
-from bormosync.engine.strategies import get_strategy
-from bormosync.models import AlignmentMap, Anchor
+from whispersync.config import WhisperSyncConfig
+from whispersync.engine.strategies import get_strategy
+from whispersync.models import AlignmentMap, Anchor
 
 REC = Path("/audio/recorder.wav")
 
@@ -32,7 +32,7 @@ def _rec_to_local(am: AlignmentMap, r: float) -> float:
     return am.offset + am.k * r
 
 
-CONFIG = BormoSyncConfig()
+CONFIG = WhisperSyncConfig()
 
 
 def test_strategy1_single_clip() -> None:

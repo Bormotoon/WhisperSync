@@ -4,8 +4,8 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
-from bormosync.config import BormoSyncConfig
-from bormosync.engine.pipeline import PipelineProgress, run_pipeline
+from whispersync.config import WhisperSyncConfig
+from whispersync.engine.pipeline import PipelineProgress, run_pipeline
 
 
 class SyncWorker(QObject):
@@ -18,7 +18,7 @@ class SyncWorker(QObject):
 
     def __init__(
         self,
-        config: BormoSyncConfig,
+        config: WhisperSyncConfig,
         video_dir: Path,
         audio_files: list[Path],
         strategy_id: int,

@@ -1,6 +1,6 @@
 """Help & tutorial page.
 
-A scrollable, self-contained explainer of how BormoSync works, with the
+A scrollable, self-contained explainer of how WhisperSync works, with the
 interactive micro-sync simulator embedded so the concepts are tangible before
 the user picks a strategy and runs anything.
 """
@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bormosync.gui.widgets.sync_simulator import SyncSimulator
+from whispersync.gui.widgets.sync_simulator import SyncSimulator
 
 _H = "color:#FF6E40; font-size:15px; font-weight:bold;"
 _BODY = "color:#C7C9CE; font-size:12.5px;"
@@ -46,7 +46,7 @@ class HelpPage(QWidget):
 
         self._heading("What problem does this solve?")
         self._para(
-            "BormoSync is built for <b>dual-system sound</b>: you film on one device "
+            "WhisperSync is built for <b>dual-system sound</b>: you film on one device "
             "(say a DJI Pocket) whose built-in microphone is weak, and capture clean "
             "audio separately (a phone with a radio mic). The two devices run on "
             "independent quartz clocks, so over minutes-to-hours their timing slowly "
@@ -55,7 +55,7 @@ class HelpPage(QWidget):
             "creeping drift, so the dialogue slides out of sync later on."
         )
 
-        self._heading("How BormoSync works")
+        self._heading("How WhisperSync works")
         self._para(
             "<ol>"
             "<li><b>Probe</b> — read the duration and format of every clip.</li>"

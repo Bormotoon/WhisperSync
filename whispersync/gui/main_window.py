@@ -1,4 +1,4 @@
-"""Main application window for BormoSync GUI."""
+"""Main application window for WhisperSync GUI."""
 
 from __future__ import annotations
 
@@ -29,25 +29,25 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bormosync.config import BormoSyncConfig
-from bormosync.gui.widgets.drop_zone import DropZone
-from bormosync.gui.widgets.help_page import HelpPage
-from bormosync.gui.widgets.log_view import LogView
-from bormosync.gui.widgets.timeline_preview import TimelinePreview
-from bormosync.gui.worker import SyncWorker
+from whispersync.config import WhisperSyncConfig
+from whispersync.gui.widgets.drop_zone import DropZone
+from whispersync.gui.widgets.help_page import HelpPage
+from whispersync.gui.widgets.log_view import LogView
+from whispersync.gui.widgets.timeline_preview import TimelinePreview
+from whispersync.gui.worker import SyncWorker
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("BormoSync — Audio/Video Synchronization")
+        self.setWindowTitle("WhisperSync — Audio/Video Synchronization")
         # Floor below which the layout would get cramped; the left column scrolls
         # rather than crushing its groups. Open larger so everything fits at once.
         self.setMinimumSize(1040, 640)
         self.resize(1280, 940)
 
-        self.config = BormoSyncConfig()
-        self.settings = QSettings("BormoSync", "BormoSync")
+        self.config = WhisperSyncConfig()
+        self.settings = QSettings("WhisperSync", "WhisperSync")
         self._worker: SyncWorker | None = None
         self._thread: QThread | None = None
         self._output_user_set = False  # has the user picked an explicit output folder?
@@ -66,7 +66,7 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(16, 16, 8, 16)
         left_layout.setSpacing(10)
 
-        title = QLabel("BormoSync")
+        title = QLabel("WhisperSync")
         title.setFont(QFont("Arial", 24, QFont.Weight.Bold))
         title.setStyleSheet("color: #E53935; margin-bottom: 0px;")
         left_layout.addWidget(title)
@@ -373,7 +373,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.stage_label.setText("Done!")
 
-        from bormosync.models import SyncResult
+        from whispersync.models import SyncResult
 
         if isinstance(result, SyncResult):
             self.result_label.setStyleSheet("color: #F0F0F1;")

@@ -1,4 +1,4 @@
-"""Core data models for BormoSync."""
+"""Core data models for WhisperSync."""
 
 from dataclasses import dataclass, field
 from pathlib import Path

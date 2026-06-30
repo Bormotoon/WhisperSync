@@ -1,6 +1,6 @@
 """Interactive micro-synchronization simulator.
 
-A teaching playground that mirrors the look of the real BormoSync timeline so a
+A teaching playground that mirrors the look of the real WhisperSync timeline so a
 user recognises it instantly. Two tracks — a blue **reference** (camera/video)
 and a red **recorder** (clean audio) — are laid out exactly like the run-time
 timeline, with the same ruler, row strips and per-clip speed badges.

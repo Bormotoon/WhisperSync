@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from bormosync.engine.media import build_atempo_chain
-from bormosync.engine.timestretch import edge_fade_filters
+from whispersync.engine.media import build_atempo_chain
+from whispersync.engine.timestretch import edge_fade_filters
 
 
 def _eval_chain(chain: list[str]) -> float:

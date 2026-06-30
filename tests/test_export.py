@@ -6,14 +6,14 @@ import xml.etree.ElementTree as ET
 from fractions import Fraction
 from pathlib import Path
 
-from bormosync.engine.export import (
+from whispersync.engine.export import (
     fps_to_frame_duration,
     generate_fcpxml,
     to_rational,
     validate_fcpxml,
 )
-from bormosync.engine.media import MediaInfo
-from bormosync.models import MediaClip, SyncPlan
+from whispersync.engine.media import MediaInfo
+from whispersync.models import MediaClip, SyncPlan
 
 
 def test_to_rational() -> None:

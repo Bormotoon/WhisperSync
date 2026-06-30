@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from bormosync.config import BormoSyncConfig
-from bormosync.engine.pipeline import (
+from whispersync.config import WhisperSyncConfig
+from whispersync.engine.pipeline import (
     CameraGroup,
     clip_pieces,
     compute_master_offsets,
     make_timeline_entries,
     scan_cameras,
 )
-from bormosync.models import AlignmentMap, Anchor, MediaClip
+from whispersync.models import AlignmentMap, Anchor, MediaClip
 
 
 def test_clip_pieces_tracks_nonlinear_drift() -> None:
@@ -25,7 +25,7 @@ def test_clip_pieces_tracks_nonlinear_drift() -> None:
         for t in range(1, 11)
     ]
     am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
-    cfg = BormoSyncConfig()
+    cfg = WhisperSyncConfig()
 
     _, pieces = clip_pieces(am, clip_duration=12.0, rec_duration=20.0, strategy_id=2, config=cfg)
     factors = {round(f, 4) for _, _, f in pieces}
@@ -75,7 +75,7 @@ def test_unaligned_clip_falls_back_to_previous_end() -> None:
 def _fake_probe(path: Path):  # noqa: ANN202
     from fractions import Fraction
 
-    from bormosync.engine.media import MediaInfo
+    from whispersync.engine.media import MediaInfo
 
     return MediaInfo(
         path=path,
@@ -91,11 +91,11 @@ def _fake_probe(path: Path):  # noqa: ANN202
 
 
 def test_scan_cameras_flat_dir_is_single_camera(tmp_path, monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setattr("bormosync.engine.pipeline.probe", _fake_probe)
+    monkeypatch.setattr("whispersync.engine.pipeline.probe", _fake_probe)
     (tmp_path / "a.mp4").touch()
     (tmp_path / "b.mp4").touch()
 
-    cams = scan_cameras(tmp_path, BormoSyncConfig())
+    cams = scan_cameras(tmp_path, WhisperSyncConfig())
     assert len(cams) == 1
     assert cams[0].lane == 1
     assert len(cams[0].clips) == 2
@@ -105,14 +105,14 @@ def test_scan_cameras_flat_dir_is_single_camera(tmp_path, monkeypatch) -> None: 
 def test_scan_cameras_subfolders_become_separate_lanes(
     tmp_path, monkeypatch
 ) -> None:  # noqa: ANN001
-    monkeypatch.setattr("bormosync.engine.pipeline.probe", _fake_probe)
+    monkeypatch.setattr("whispersync.engine.pipeline.probe", _fake_probe)
     (tmp_path / "camA").mkdir()
     (tmp_path / "camB").mkdir()
     (tmp_path / "camA" / "a1.mp4").touch()
     (tmp_path / "camA" / "a2.mp4").touch()
     (tmp_path / "camB" / "b1.mp4").touch()
 
-    cams = scan_cameras(tmp_path, BormoSyncConfig())
+    cams = scan_cameras(tmp_path, WhisperSyncConfig())
     assert [c.name for c in cams] == ["camA", "camB"]
     assert cams[0].lane == 1 and cams[1].lane == 2
     assert len(cams[0].clips) == 2 and len(cams[1].clips) == 1
@@ -121,9 +121,9 @@ def test_scan_cameras_subfolders_become_separate_lanes(
 
 
 def test_scan_cameras_empty_dir_raises(tmp_path, monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setattr("bormosync.engine.pipeline.probe", _fake_probe)
+    monkeypatch.setattr("whispersync.engine.pipeline.probe", _fake_probe)
     with pytest.raises(RuntimeError):
-        scan_cameras(tmp_path, BormoSyncConfig())
+        scan_cameras(tmp_path, WhisperSyncConfig())
 
 
 def _vclip(name: str, offset: float, dur: float, lane: int) -> MediaClip:
@@ -191,7 +191,7 @@ def test_timeline_entries_separate_audio_lanes() -> None:
 
 
 def test_preliminary_offsets_end_to_end_per_camera() -> None:
-    from bormosync.engine.pipeline import preliminary_offsets
+    from whispersync.engine.pipeline import preliminary_offsets
 
     clips = [
         _vclip("a1", 0.0, 10.0, 1),
@@ -205,7 +205,7 @@ def test_preliminary_offsets_end_to_end_per_camera() -> None:
 
 
 def test_sequence_order_warning_on_disordered_offsets() -> None:
-    from bormosync.engine.pipeline import sequence_order_warnings
+    from whispersync.engine.pipeline import sequence_order_warnings
 
     # natural order a1,a2 but a2 placed BEFORE a1 -> warn
     clips = [_vclip("a1", 50.0, 10.0, 1), _vclip("a2", 5.0, 10.0, 1)]
@@ -214,7 +214,7 @@ def test_sequence_order_warning_on_disordered_offsets() -> None:
 
 
 def test_sequence_order_no_warning_when_consistent() -> None:
-    from bormosync.engine.pipeline import sequence_order_warnings
+    from whispersync.engine.pipeline import sequence_order_warnings
 
     clips = [_vclip("a1", 0.0, 10.0, 1), _vclip("a2", 12.0, 10.0, 1)]
     assert sequence_order_warnings(clips, [0, 0], [True, True]) == []

@@ -103,7 +103,7 @@ def check_disk_space(min_gb: int = 10) -> dict:
 
 
 def run_all_checks() -> dict:
-    print("BormoSync — System Check")
+    print("WhisperSync — System Check")
     print("=" * 40)
 
     print("\n[FFmpeg]")

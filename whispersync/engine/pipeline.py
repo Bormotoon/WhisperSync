@@ -16,20 +16,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bormosync.config import BormoSyncConfig
-from bormosync.engine.export import generate_fcpxml
-from bormosync.engine.matcher import align
-from bormosync.engine.media import MediaInfo, extract_audio_to_wav, probe
-from bormosync.engine.naming import natural_key
-from bormosync.engine.strategies import get_strategy
-from bormosync.engine.timestretch import (
+from whispersync.config import WhisperSyncConfig
+from whispersync.engine.export import generate_fcpxml
+from whispersync.engine.matcher import align
+from whispersync.engine.media import MediaInfo, extract_audio_to_wav, probe
+from whispersync.engine.naming import natural_key
+from whispersync.engine.strategies import get_strategy
+from whispersync.engine.timestretch import (
     apply_atempo_segment,
     assemble_continuous,
     extract_segment,
 )
-from bormosync.engine.transcriber import WhisperEngine
-from bormosync.engine.transcript_export import save_transcript
-from bormosync.models import AlignmentMap, MediaClip, SyncResult, Transcript
+from whispersync.engine.transcriber import WhisperEngine
+from whispersync.engine.transcript_export import save_transcript
+from whispersync.models import AlignmentMap, MediaClip, SyncResult, Transcript
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ class CameraGroup:
     clips: list[MediaClip]
 
 
-def scan_cameras(video_dir: Path, config: BormoSyncConfig) -> list[CameraGroup]:
+def scan_cameras(video_dir: Path, config: WhisperSyncConfig) -> list[CameraGroup]:
     """Discover cameras and probe their clips.
 
     If ``video_dir`` contains sub-folders with video files, each sub-folder is
@@ -167,7 +167,7 @@ def scan_cameras(video_dir: Path, config: BormoSyncConfig) -> list[CameraGroup]:
 
 
 def scan_video_clips(
-    video_dir: Path, config: BormoSyncConfig
+    video_dir: Path, config: WhisperSyncConfig
 ) -> tuple[list[MediaInfo], list[MediaClip]]:
     """Flat view over all cameras (used by the dry-run path)."""
     cameras = scan_cameras(video_dir, config)
@@ -259,7 +259,7 @@ def clip_pieces(
     clip_duration: float,
     rec_duration: float,
     strategy_id: int,
-    config: BormoSyncConfig,
+    config: WhisperSyncConfig,
 ) -> tuple[float, list[tuple[float, float, float]]]:
     """Contiguous recorder pieces that tile a camera clip, for a continuous warp.
 
@@ -345,7 +345,7 @@ def _anchor_count(am: AlignmentMap | None) -> int:
 
 
 def run_pipeline(
-    config: BormoSyncConfig,
+    config: WhisperSyncConfig,
     video_dir: Path,
     audio_files: list[Path],
     strategy_id: int,
@@ -577,7 +577,7 @@ def run_pipeline(
         # Show the full planned layout (video placed, audio pending) up front.
         _notify("planning", 1.0, "Timeline planned", clips=_timeline_snapshot())
 
-        from bormosync.models import SyncPlan
+        from whispersync.models import SyncPlan
 
         all_clips = video_clips + audio_clips
         plan = SyncPlan(
@@ -603,7 +603,7 @@ def run_pipeline(
             )
             # Keep scratch segments on the OUTPUT volume (next to the result), not
             # the system /tmp — /tmp may be small or on a full disk.
-            with tempfile.TemporaryDirectory(prefix="bormosync_seg_", dir=audio_synced_dir) as td:
+            with tempfile.TemporaryDirectory(prefix="whispersync_seg_", dir=audio_synced_dir) as td:
                 tdp = Path(td)
                 seg_paths: list[Path] = []
                 for k, (rec_start, rec_dur, factor) in enumerate(pieces):

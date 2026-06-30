@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bormosync.engine.media import build_atempo_chain, path_to_file_uri
+from whispersync.engine.media import build_atempo_chain, path_to_file_uri
 
 
 def test_path_to_file_uri() -> None:

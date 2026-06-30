@@ -7,8 +7,8 @@ import xml.etree.ElementTree as ET
 from fractions import Fraction
 from pathlib import Path
 
-from bormosync.engine.media import MediaInfo, path_to_file_uri
-from bormosync.models import SyncPlan
+from whispersync.engine.media import MediaInfo, path_to_file_uri
+from whispersync.models import SyncPlan
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def generate_fcpxml(
     video_infos: list[MediaInfo],
     output_path: Path,
     fcpxml_version: str = "1.9",
-    project_name: str = "BormoSync",
+    project_name: str = "WhisperSync",
     audio_sample_rate: int | None = None,
 ) -> Path:
     ref_video = video_infos[0] if video_infos else None
@@ -157,7 +157,7 @@ def generate_fcpxml(
         ET.SubElement(asset_el, "media-rep", kind="original-media", src=file_uri)
 
     library = ET.SubElement(root, "library")
-    event = ET.SubElement(library, "event", name="BormoSync")
+    event = ET.SubElement(library, "event", name="WhisperSync")
     project = ET.SubElement(event, "project", name=project_name)
 
     seq_dur = _frame_rational(plan.total_duration, seq_fps, "ceil")

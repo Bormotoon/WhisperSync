@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bormosync.cli import _build_parser
+from whispersync.cli import _build_parser
 
 
 def test_single_audio_file() -> None:

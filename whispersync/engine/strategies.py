@@ -19,8 +19,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from bormosync.config import BormoSyncConfig
-from bormosync.models import AlignmentMap, Anchor, MediaClip
+from whispersync.config import WhisperSyncConfig
+from whispersync.models import AlignmentMap, Anchor, MediaClip
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ class SyncStrategy(ABC):
         clip_offset: float,
         clip_duration: float,
         rec_duration: float,
-        config: BormoSyncConfig,
+        config: WhisperSyncConfig,
     ) -> ClipPlan: ...
 
 
@@ -93,7 +93,7 @@ class GlobalLinearStrategy(SyncStrategy):
         clip_offset: float,
         clip_duration: float,
         rec_duration: float,
-        config: BormoSyncConfig,
+        config: WhisperSyncConfig,
     ) -> ClipPlan:
         r0 = _clamp(_local_to_rec(alignment, 0.0), 0.0, rec_duration)
         r1 = _clamp(_local_to_rec(alignment, clip_duration), 0.0, rec_duration)
@@ -136,7 +136,7 @@ class LocalTimeStretchStrategy(SyncStrategy):
         clip_offset: float,
         clip_duration: float,
         rec_duration: float,
-        config: BormoSyncConfig,
+        config: WhisperSyncConfig,
     ) -> ClipPlan:
         anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
         if len(anchors) < 2:
@@ -197,7 +197,7 @@ class SilencePaddingStrategy(SyncStrategy):
         clip_offset: float,
         clip_duration: float,
         rec_duration: float,
-        config: BormoSyncConfig,
+        config: WhisperSyncConfig,
     ) -> ClipPlan:
         anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
         if not anchors:
@@ -250,7 +250,7 @@ class HybridStrategy(SyncStrategy):
         clip_offset: float,
         clip_duration: float,
         rec_duration: float,
-        config: BormoSyncConfig,
+        config: WhisperSyncConfig,
     ) -> ClipPlan:
         anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
         if not anchors:

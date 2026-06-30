@@ -1,4 +1,4 @@
-"""Unified logging configuration for BormoSync."""
+"""Unified logging configuration for WhisperSync."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def setup_logging(
     level: int = logging.INFO,
     log_file: Path | None = None,
 ) -> logging.Logger:
-    root = logging.getLogger("bormosync")
+    root = logging.getLogger("whispersync")
     root.setLevel(level)
 
     if root.handlers:

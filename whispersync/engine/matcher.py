@@ -10,8 +10,8 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
-from bormosync.config import BormoSyncConfig
-from bormosync.models import AlignmentMap, Anchor, Transcript, Word
+from whispersync.config import WhisperSyncConfig
+from whispersync.models import AlignmentMap, Anchor, Transcript, Word
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def _mid(w: Word) -> float:
 
 
 def estimate_coarse_delta(
-    cam_words: list[Word], rec_words: list[Word], config: BormoSyncConfig
+    cam_words: list[Word], rec_words: list[Word], config: WhisperSyncConfig
 ) -> float | None:
     """Roughly locate the clip inside a (possibly very long) reference by voting
     on the time delta ``rec_time - cam_time`` of shared rare words. Returns the
@@ -210,7 +210,7 @@ def ransac_linear_fit(
 
 
 def _window_recorder(
-    cam_words: list[Word], rec_words: list[Word], config: BormoSyncConfig
+    cam_words: list[Word], rec_words: list[Word], config: WhisperSyncConfig
 ) -> list[Word]:
     """If the recorder is much longer than the clip, restrict matching to a
     window around the coarse estimate; otherwise return all recorder words."""
@@ -246,7 +246,7 @@ def _window_recorder(
 def align(
     cam_transcript: Transcript,
     rec_transcript: Transcript,
-    config: BormoSyncConfig,
+    config: WhisperSyncConfig,
 ) -> AlignmentMap:
     cam_words = normalize_words(list(cam_transcript.words), config.anchor_min_confidence)
     rec_words = normalize_words(list(rec_transcript.words), config.anchor_min_confidence)

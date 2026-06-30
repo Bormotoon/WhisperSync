@@ -1,4 +1,4 @@
-"""Configuration management for BormoSync."""
+"""Configuration management for WhisperSync."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from platformdirs import user_cache_dir, user_config_dir
 
-APP_NAME = "bormosync"
+APP_NAME = "whispersync"
 
 DEFAULT_VIDEO_EXTS = [".mp4", ".mov", ".mxf", ".avi", ".mkv"]
 DEFAULT_AUDIO_EXTS = [".wav", ".mp3", ".m4a", ".flac"]
@@ -39,7 +39,7 @@ TIMEBASE_SOURCES = ("camera", "recorder")
 
 
 @dataclass
-class BormoSyncConfig:
+class WhisperSyncConfig:
     model: str = "large-v3"
     # "auto" resolves to cuda when available, else cpu. compute_type "auto" picks
     # float16 on modern CUDA (capability >= 7.0), int8_float16 on older GPUs,
@@ -110,7 +110,7 @@ class BormoSyncConfig:
         return Path(user_config_dir(APP_NAME))
 
     @classmethod
-    def from_file(cls, path: Path) -> BormoSyncConfig:
+    def from_file(cls, path: Path) -> WhisperSyncConfig:
         with open(path) as f:
             data = json.load(f)
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
@@ -121,10 +121,10 @@ class BormoSyncConfig:
                 setattr(self, key, value)
 
 
-def load_config(config_path: Path | None = None, **cli_overrides: object) -> BormoSyncConfig:
+def load_config(config_path: Path | None = None, **cli_overrides: object) -> WhisperSyncConfig:
     if config_path and config_path.exists():
-        cfg = BormoSyncConfig.from_file(config_path)
+        cfg = WhisperSyncConfig.from_file(config_path)
     else:
-        cfg = BormoSyncConfig()
+        cfg = WhisperSyncConfig()
     cfg.merge_cli_args(**cli_overrides)
     return cfg

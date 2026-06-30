@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from bormosync.config import BormoSyncConfig
-from bormosync.engine.matcher import (
+from whispersync.config import WhisperSyncConfig
+from whispersync.engine.matcher import (
     align,
     estimate_coarse_delta,
     find_anchors,
@@ -13,7 +13,7 @@ from bormosync.engine.matcher import (
     normalize_words,
     reject_gross_outliers,
 )
-from bormosync.models import Anchor, Segment, Transcript, Word
+from whispersync.models import Anchor, Segment, Transcript, Word
 
 
 def test_reject_gross_outliers_keeps_smooth_drift() -> None:
@@ -115,7 +115,7 @@ def test_align_known_offset_and_k() -> None:
 
     cam_t = _make_transcript(cam_words, "cam.wav")
     rec_t = _make_transcript(rec_words, "rec.wav")
-    config = BormoSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
+    config = WhisperSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
 
     result = align(cam_t, rec_t, config)
 
@@ -170,7 +170,7 @@ def test_estimate_coarse_delta_finds_region_despite_distractors() -> None:
     cam_t, rec_t = _long_recorder_with_clip(
         clip_tokens, clip_offset_in_rec=1800.0, total_rec_minutes=60.0, true_k=1.0
     )
-    cfg = BormoSyncConfig(anchor_min_confidence=0.5)
+    cfg = WhisperSyncConfig(anchor_min_confidence=0.5)
     cam_w = normalize_words(list(cam_t.words), 0.5)
     rec_w = normalize_words(list(rec_t.words), 0.5)
     delta = estimate_coarse_delta(cam_w, rec_w, cfg)
@@ -185,7 +185,7 @@ def test_align_windowed_on_long_recorder() -> None:
     cam_t, rec_t = _long_recorder_with_clip(
         clip_tokens, clip_offset_in_rec=clip_offset, total_rec_minutes=80.0, true_k=true_k
     )
-    cfg = BormoSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
+    cfg = WhisperSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
     result = align(cam_t, rec_t, cfg)
     assert abs(result.k - true_k) < 0.002
     # the clip's local 0 must map back to recorder t≈2400

@@ -1,5 +1,5 @@
 /* ============================================================================
-   BormoSync — Dark Theme
+   WhisperSync — Dark Theme
    ----------------------------------------------------------------------------
    Design tokens (Qt QSS has no variables; these hex values are the single
    source of truth — keep widget-level inline styles in sync with them):

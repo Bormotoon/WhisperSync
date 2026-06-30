@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for BormoSync."""
+"""PyInstaller spec for WhisperSync."""
 
 import sys
 from pathlib import Path
@@ -11,7 +11,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('bormosync/gui/theme.qss', 'bormosync/gui'),
+        ('whispersync/gui/theme.qss', 'whispersync/gui'),
     ],
     hiddenimports=[
         'ctranslate2',
@@ -45,7 +45,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='BormoSync',
+    name='WhisperSync',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -61,5 +61,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='BormoSync',
+    name='WhisperSync',
 )

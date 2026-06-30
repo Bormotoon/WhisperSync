@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bormosync.engine.transcript_export import (
+from whispersync.engine.transcript_export import (
     build_sentence_groups,
     format_srt_timestamp,
     save_transcript,
 )
-from bormosync.models import Segment, Transcript, Word
+from whispersync.models import Segment, Transcript, Word
 
 
 def _transcript() -> Transcript:

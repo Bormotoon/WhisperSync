@@ -1,15 +1,15 @@
-"""BormoSync entry point: GUI by default, --cli for headless mode."""
+"""WhisperSync entry point: GUI by default, --cli for headless mode."""
 
 import sys
 
 
 def main() -> None:
     if "--cli" in sys.argv:
-        from bormosync.cli import main as cli_main
+        from whispersync.cli import main as cli_main
 
         cli_main()
     else:
-        from bormosync.gui.main_window import main as gui_main
+        from whispersync.gui.main_window import main as gui_main
 
         gui_main()
 

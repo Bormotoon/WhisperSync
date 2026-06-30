@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from bormosync.models import Segment, Transcript
+from whispersync.models import Segment, Transcript
 
 _SENTENCE_END = re.compile(r"[.!?…！？]$")
 _SENTENCE_MAX_CHARS = 140

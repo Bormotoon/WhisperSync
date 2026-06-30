@@ -1,4 +1,4 @@
-"""CLI interface for BormoSync headless mode."""
+"""CLI interface for WhisperSync headless mode."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from bormosync.config import BormoSyncConfig, load_config
-from bormosync.engine.pipeline import PipelineProgress, run_pipeline
-from bormosync.logging_setup import setup_logging
+from whispersync.config import WhisperSyncConfig, load_config
+from whispersync.engine.pipeline import PipelineProgress, run_pipeline
+from whispersync.logging_setup import setup_logging
 
 try:
     from rich.console import Console
@@ -20,7 +20,7 @@ try:
 except ImportError:
     _console = None
 
-logger = logging.getLogger("bormosync.cli")
+logger = logging.getLogger("whispersync.cli")
 
 
 # ---------------------------------------------------------------------------
@@ -48,11 +48,11 @@ def _progress_printer(p: PipelineProgress) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="bormosync",
-        description="BormoSync — Advanced Audio/Video Synchronization Tool",
+        prog="whispersync",
+        description="WhisperSync — Advanced Audio/Video Synchronization Tool",
         epilog=(
             "Example:\n"
-            "  bormosync --video-dir ./videos --audio-file rec.wav "
+            "  whispersync --video-dir ./videos --audio-file rec.wav "
             "--strategy 1 --output output/sync.fcpxml"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -160,7 +160,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _run_dry_run(
-    config: BormoSyncConfig,
+    config: WhisperSyncConfig,
     video_dir: Path,
     audio_files: list[Path],
     progress_callback: Any = None,
@@ -168,10 +168,10 @@ def _run_dry_run(
     import os
     from contextlib import suppress
 
-    from bormosync.engine.matcher import align as match_align
-    from bormosync.engine.media import extract_audio_to_wav
-    from bormosync.engine.pipeline import scan_video_clips
-    from bormosync.engine.transcriber import WhisperEngine
+    from whispersync.engine.matcher import align as match_align
+    from whispersync.engine.media import extract_audio_to_wav
+    from whispersync.engine.pipeline import scan_video_clips
+    from whispersync.engine.transcriber import WhisperEngine
 
     def _notify(stage: str, progress: float = 0.0, message: str = "") -> None:
         if progress_callback is not None:
@@ -307,7 +307,7 @@ def main() -> None:
     output_path = args.output or (args.video_dir / "sync_output.fcpxml")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _print("BormoSync — Starting synchronization")
+    _print("WhisperSync — Starting synchronization")
     _print(f"  Video dir:   {args.video_dir}")
     _print(f"  Audio files: {', '.join(str(a) for a in args.audio_files)}")
     _print(f"  Strategy:    {args.strategy}")
