@@ -133,6 +133,10 @@ class WhisperSyncConfig:
     # for the Local Time-Stretch strategy). Length-preserving, so no extra drift.
     crossfade_enabled: bool = True
     crossfade_ms: int = 10
+    # Parallelism for the CPU-bound audio render (ffmpeg has no GPU audio filters):
+    # each piece / Flex window is an independent ffmpeg call, spread across a process
+    # pool. 0 = auto (os.cpu_count()); 1 = sequential. Output is identical regardless.
+    render_workers: int = 0
     min_anchors: int = MIN_ANCHORS
     anchor_min_confidence: float = ANCHOR_MIN_CONFIDENCE
     phrase_gap_threshold: float = PHRASE_GAP_THRESHOLD

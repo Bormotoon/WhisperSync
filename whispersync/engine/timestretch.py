@@ -198,6 +198,27 @@ def extract_segment(
     return output_path
 
 
+def render_piece(
+    input_path: Path,
+    output_dir: Path,
+    rec_start: float,
+    rec_dur: float,
+    factor: float,
+    index: int,
+    fade_ms: int,
+) -> Path:
+    """Render one timeline piece to ``segment_{index:04d}.wav``: a plain cut when the
+    tempo is unchanged, otherwise an atempo stretch. A pure, side-effect-free wrapper
+    (only writes its own indexed file) so it can run in a process pool — the output
+    is identical and order-independent because each piece owns a distinct filename.
+    """
+    if abs(factor - 1.0) > 1e-6:
+        return apply_atempo_segment(
+            input_path, output_dir, rec_start, rec_dur, factor, index, fade_ms=fade_ms
+        )
+    return extract_segment(input_path, output_dir, rec_start, rec_dur, index, fade_ms=fade_ms)
+
+
 def generate_silence(
     output_path: Path,
     duration: float,

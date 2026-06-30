@@ -89,6 +89,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Crossfade/declick fade length in ms (default: 10)",
     )
     parser.add_argument(
+        "--render-workers",
+        type=int,
+        default=None,
+        help="Parallel ffmpeg processes for audio render (0=auto=CPU count, 1=serial)",
+    )
+    parser.add_argument(
         "--save-transcripts",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -314,6 +320,8 @@ def main() -> None:
         overrides["crossfade_enabled"] = args.crossfade
     if args.crossfade_ms is not None:
         overrides["crossfade_ms"] = args.crossfade_ms
+    if args.render_workers is not None:
+        overrides["render_workers"] = args.render_workers
     if args.save_transcripts is not None:
         overrides["save_transcripts"] = args.save_transcripts
     if args.boundary_flex is not None:

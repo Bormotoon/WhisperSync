@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import multiprocessing as mp
 import os
 import tempfile
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,10 +26,9 @@ from whispersync.engine.media import MediaInfo, extract_audio_to_wav, probe
 from whispersync.engine.naming import natural_key
 from whispersync.engine.strategies import get_strategy
 from whispersync.engine.timestretch import (
-    apply_atempo_segment,
     apply_pause_ducking,
     assemble_continuous,
-    extract_segment,
+    render_piece,
 )
 from whispersync.engine.transcriber import WhisperEngine
 from whispersync.engine.transcript_export import save_transcript
@@ -368,6 +369,62 @@ def pause_spans_local(
     return out
 
 
+def resolve_workers(requested: int) -> int:
+    """Number of parallel render processes: ``requested`` if >0, else os.cpu_count()."""
+    if requested and requested > 0:
+        return requested
+    return max(1, os.cpu_count() or 1)
+
+
+def _pool_context() -> Any:
+    """A 'fork' multiprocessing context for the render pools, with a safe fallback.
+
+    fork is ideal here: children inherit the already-imported modules (no costly
+    re-import per task, which matters for many short ffmpeg calls) and it avoids the
+    spawn/forkserver re-execution of __main__. On platforms without fork (Windows /
+    macOS-spawn-only) we fall back to the default context, which still works because
+    the worker functions are module-level and picklable.
+    """
+    try:
+        return mp.get_context("fork")
+    except (ValueError, RuntimeError):  # pragma: no cover - platform dependent
+        return mp.get_context()
+
+
+def render_pieces(
+    pieces: list[tuple[float, float, float]],
+    rec_path: Path,
+    tmp_dir: Path,
+    fade_ms: int,
+    workers: int,
+) -> list[Path]:
+    """Render every piece to its own indexed WAV, in parallel across ``workers``
+    processes, and return the paths in piece order.
+
+    Each piece is an independent CPU-bound ffmpeg call writing a distinct
+    ``segment_{index}.wav`` (ffmpeg has no GPU audio filters, so spreading the work
+    across cores is the real speed-up). The result is identical to a sequential run:
+    files are keyed by index and re-sorted before returning.
+    """
+    if not pieces:
+        return []
+    if workers <= 1 or len(pieces) == 1:
+        return [
+            render_piece(rec_path, tmp_dir, rs, rd, fac, k, fade_ms)
+            for k, (rs, rd, fac) in enumerate(pieces)
+        ]
+    results: dict[int, Path] = {}
+    with ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context()) as pool:
+        futures = {
+            pool.submit(render_piece, rec_path, tmp_dir, rs, rd, fac, k, fade_ms): k
+            for k, (rs, rd, fac) in enumerate(pieces)
+        }
+        for fut in futures:
+            k = futures[fut]
+            results[k] = fut.result()  # re-raises any worker exception here
+    return [results[k] for k in range(len(pieces))]
+
+
 def _timeline_end(clips: list[MediaClip]) -> float:
     return max((c.offset + c.duration for c in clips), default=0.0)
 
@@ -657,6 +714,7 @@ def run_pipeline(
         _notify("processing", 0.0, "Rendering synced audio...")
         # Small length-preserving fades declick the seams between stretched pieces.
         fade_ms = config.crossfade_ms if config.crossfade_enabled else 0
+        workers = resolve_workers(config.render_workers)
         n_jobs = max(len(render_jobs), 1)
         for j, job in enumerate(render_jobs):
             clip_idx = job.clip_idx
@@ -684,18 +742,11 @@ def run_pipeline(
                         job.rec_duration,
                         config,
                         tmp_dir=tdp,
+                        workers=workers,
                     )
-                seg_paths = []
-                for k, (rec_start, rec_dur, factor) in enumerate(pieces):
-                    if abs(factor - 1.0) > 1e-6:
-                        sp = apply_atempo_segment(
-                            job.rec_path, tdp, rec_start, rec_dur, factor, k, fade_ms=fade_ms
-                        )
-                    else:
-                        sp = extract_segment(
-                            job.rec_path, tdp, rec_start, rec_dur, k, fade_ms=fade_ms
-                        )
-                    seg_paths.append(sp)
+                # Each piece is an independent ffmpeg cut/stretch; render them across
+                # the CPU pool (ffmpeg has no GPU audio filters). Order is preserved.
+                seg_paths = render_pieces(pieces, job.rec_path, tdp, fade_ms, workers)
                 out = audio_synced_dir / f"synced_{clip_idx:03d}.wav"
                 # Duck inter-phrase pauses (if enabled) on an intermediate file, then
                 # the ducked result becomes the final output.

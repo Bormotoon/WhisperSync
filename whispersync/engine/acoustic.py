@@ -18,9 +18,12 @@ that region falls back to the text map (zero correction).
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
 import tempfile
 import wave
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -31,6 +34,15 @@ from whispersync.models import Anchor
 logger = logging.getLogger(__name__)
 
 _REFINE_SR = 16000  # all acoustic windows are cut to mono 16 kHz
+
+
+def _pool_context() -> Any:
+    """'fork' context for the boundary-measurement pool (fast, no __main__ re-import);
+    falls back to the default context where fork is unavailable."""
+    try:
+        return mp.get_context("fork")
+    except (ValueError, RuntimeError):  # pragma: no cover - platform dependent
+        return mp.get_context()
 
 
 def read_wav_mono16k(path: Path) -> tuple[np.ndarray, int]:
@@ -269,6 +281,46 @@ def refine_anchors(
 Piece = tuple[float, float, float]
 
 
+def _measure_boundary(
+    idx: int,
+    cam_mid: float,
+    rec_mid: float,
+    cam_audio_wav: Path,
+    rec_audio_path: Path,
+    tmp_dir: Path,
+    win: float,
+    max_lag_s: float,
+    eps: float,
+    min_sharpness: float,
+    deadband_s: float,
+    max_shift_s: float,
+) -> tuple[int, float]:
+    """Measure one boundary's acoustic correction (seconds to add to rec_start).
+
+    Module-level and self-contained (writes only its own indexed scratch files) so it
+    runs in a process pool. Returns ``(idx, correction)``; correction is 0.0 when the
+    peak is not confident or the residual is within the deadband.
+    """
+    cam_win = tmp_dir / f"flex_cam_{idx:05d}.wav"
+    rec_win = tmp_dir / f"flex_rec_{idx:05d}.wav"
+    try:
+        extract_audio_window(cam_audio_wav, cam_win, cam_mid - win / 2.0, win, _REFINE_SR)
+        extract_audio_window(rec_audio_path, rec_win, rec_mid - win / 2.0, win, _REFINE_SR)
+        cam_sig, _ = read_wav_mono16k(cam_win)
+        rec_sig, _ = read_wav_mono16k(rec_win)
+        lag_s, sharp = gcc_phat(cam_sig, rec_sig, _REFINE_SR, max_lag_s, eps)
+        # -lag_s = seconds to add to the recorder read time (see _measure_grid).
+        if sharp >= min_sharpness and abs(lag_s) > deadband_s:
+            return idx, max(-max_shift_s, min(max_shift_s, -lag_s))
+        return idx, 0.0
+    except (RuntimeError, ValueError) as e:
+        logger.debug("flex boundary %d failed: %s", idx, e)
+        return idx, 0.0
+    finally:
+        cam_win.unlink(missing_ok=True)
+        rec_win.unlink(missing_ok=True)
+
+
 def refine_piece_boundaries(
     pieces: list[Piece],
     lead: float,
@@ -278,6 +330,7 @@ def refine_piece_boundaries(
     rec_duration: float,
     config: WhisperSyncConfig,
     tmp_dir: Path | None = None,
+    workers: int = 1,
 ) -> list[Piece]:
     """Acoustically nudge each piece's recorder start so its speech lands under the
     picture, independent of Whisper's word timings ("Boundary Flex").
@@ -289,6 +342,10 @@ def refine_piece_boundaries(
     the measured residual exceeds the deadband, we shift ``rec_start`` by it (clamped).
     The piece's duration/factor are left unchanged, so the exact-length contract and
     the overall warp are preserved — only WHERE in the recorder we cut from moves.
+
+    The independent per-boundary measurements are spread across ``workers`` processes;
+    the geometry (which window each boundary probes) is deterministic, so the result is
+    identical regardless of worker count.
     """
     if not pieces:
         return pieces
@@ -299,53 +356,63 @@ def refine_piece_boundaries(
         tmp_dir = Path(tempfile.mkdtemp(prefix="whispersync_flex_"))
     assert tmp_dir is not None
 
-    refined: list[Piece] = []
-    n_shifted = 0
+    # First pass (cheap, sequential): the window geometry for every in-bounds boundary.
+    jobs: list[tuple[int, float, float]] = []  # (idx, cam_mid, rec_mid)
+    local = lead
+    for idx, (rec_start, rec_dur, factor) in enumerate(pieces):
+        out_dur = rec_dur / factor if factor else rec_dur
+        probe = min(out_dur, win)
+        cam_mid = local + probe / 2.0
+        rec_mid = rec_start + min(rec_dur, win) / 2.0
+        if (
+            win / 2.0 <= cam_mid <= clip_duration - win / 2.0
+            and win / 2.0 <= rec_mid <= rec_duration - win / 2.0
+        ):
+            jobs.append((idx, cam_mid, rec_mid))
+        local += out_dur
+
+    # Second pass (slow ffmpeg+GCC): measure each boundary, in parallel when asked.
+    corrections: dict[int, float] = {}
+    args = (
+        cam_audio_wav,
+        rec_audio_path,
+        tmp_dir,
+        win,
+        config.acoustic_max_lag_s,
+        config.gcc_eps,
+        config.flex_min_sharpness,
+        config.flex_deadband_s,
+        config.flex_max_shift_s,
+    )
     try:
-        local = lead
-        for idx, (rec_start, rec_dur, factor) in enumerate(pieces):
-            out_dur = rec_dur / factor if factor else rec_dur
-            # Probe a window centered a little into the piece (avoid the seam itself).
-            probe = min(out_dur, win)
-            cam_mid = local + probe / 2.0
-            rec_mid = rec_start + min(rec_dur, win) / 2.0
-            corr = 0.0
-            if (
-                win / 2.0 <= cam_mid <= clip_duration - win / 2.0
-                and win / 2.0 <= rec_mid <= rec_duration - win / 2.0
-            ):
-                cam_win = tmp_dir / f"flex_cam_{idx:05d}.wav"
-                rec_win = tmp_dir / f"flex_rec_{idx:05d}.wav"
-                try:
-                    extract_audio_window(
-                        cam_audio_wav, cam_win, cam_mid - win / 2.0, win, _REFINE_SR
-                    )
-                    extract_audio_window(
-                        rec_audio_path, rec_win, rec_mid - win / 2.0, win, _REFINE_SR
-                    )
-                    cam_sig, _ = read_wav_mono16k(cam_win)
-                    rec_sig, _ = read_wav_mono16k(rec_win)
-                    lag_s, sharp = gcc_phat(
-                        cam_sig, rec_sig, _REFINE_SR, config.acoustic_max_lag_s, config.gcc_eps
-                    )
-                    # -lag_s = seconds to add to the recorder read time (see _measure_grid).
-                    if sharp >= config.flex_min_sharpness and abs(lag_s) > config.flex_deadband_s:
-                        corr = max(-config.flex_max_shift_s, min(config.flex_max_shift_s, -lag_s))
-                        n_shifted += 1
-                except (RuntimeError, ValueError) as e:
-                    logger.debug("flex boundary %d failed: %s", idx, e)
-                finally:
-                    cam_win.unlink(missing_ok=True)
-                    rec_win.unlink(missing_ok=True)
-            # Keep the shifted start within the recorder bounds.
-            new_start = max(0.0, min(rec_start + corr, rec_duration - rec_dur))
-            refined.append((new_start, rec_dur, factor))
-            local += out_dur
+        if workers <= 1 or len(jobs) <= 1:
+            for idx, cam_mid, rec_mid in jobs:
+                i, corr = _measure_boundary(idx, cam_mid, rec_mid, *args)
+                corrections[i] = corr
+        else:
+            with ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context()) as pool:
+                futs = [
+                    pool.submit(_measure_boundary, idx, cam_mid, rec_mid, *args)
+                    for idx, cam_mid, rec_mid in jobs
+                ]
+                for fut in futs:
+                    i, corr = fut.result()
+                    corrections[i] = corr
     finally:
         if own_tmp:
             import shutil
 
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # Apply corrections, clamping each shifted start within the recorder bounds.
+    refined: list[Piece] = []
+    n_shifted = 0
+    for idx, (rec_start, rec_dur, factor) in enumerate(pieces):
+        corr = corrections.get(idx, 0.0)
+        if corr != 0.0:
+            n_shifted += 1
+        new_start = max(0.0, min(rec_start + corr, rec_duration - rec_dur))
+        refined.append((new_start, rec_dur, factor))
 
     logger.info("Boundary Flex: nudged %d/%d piece starts", n_shifted, len(pieces))
     return refined
