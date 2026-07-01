@@ -208,7 +208,9 @@ def generate_fcpxml(
 
     # Lay the video clips end-to-end with gaps for the holes. The spine's own clock
     # ("offset") is contiguous; each element's offset is where it begins on it.
-    spine_elems: list[tuple[float, float, ET.Element]] = []  # (start_s, end_s, el)
+    # Track (timeline_start, timeline_end, parent_in_point, element) so connected
+    # clips can be positioned on the PARENT's local clock (which starts at in_point).
+    spine_elems: list[tuple[float, float, float, ET.Element]] = []
     cursor = 0.0
     for clip in video_clips:
         if clip.offset > cursor + frame_s / 2:
@@ -224,7 +226,7 @@ def generate_fcpxml(
             cursor = clip.offset
         el = _spine_clip(clip, _frame_rational(cursor, seq_fps, "round"))
         end = cursor + clip.duration
-        spine_elems.append((cursor, end, el))
+        spine_elems.append((cursor, end, clip.in_point, el))
         cursor = end
 
     if not spine_elems:
@@ -244,29 +246,30 @@ def generate_fcpxml(
             )
             _set_role(el, clip)
     else:
-        # Attach each audio clip to the spine video clip covering its start; its
-        # offset is relative to that parent's own start time.
+        # Attach each audio clip to the spine video clip covering its start.
         for clip in audio_clips:
             parent = None
-            for start_s, end_s, el in spine_elems:
+            for start_s, end_s, in_pt, el in spine_elems:
                 if start_s - frame_s <= clip.offset < end_s:
-                    parent = (start_s, el)
+                    parent = (start_s, in_pt, el)
                     break
             if parent is None:
                 # Before the first / after the last video — clamp to the nearest.
-                parent = (spine_elems[0][0], spine_elems[0][2])
-            parent_start, parent_el = parent
-            rel = max(0.0, clip.offset - parent_start)
-            # Connected clip: `offset` is its position on the PARENT's local timeline
-            # (parent's own offset + rel), `start` is the clip's source in-point.
-            parent_offset_s = parent_start  # spine offset == timeline start here
+                s0, _e0, ip0, el0 = spine_elems[0]
+                parent = (s0, ip0, el0)
+            parent_tl_start, parent_in_pt, parent_el = parent
+            rel = max(0.0, clip.offset - parent_tl_start)
+            # A connected clip's `offset` is on the PARENT's OWN clock, which starts
+            # at the parent's `start` value (its in_point), NOT at the parent's spine
+            # position. So offset = parent_in_point + rel (was mistakenly the spine
+            # offset + rel, which pushed the audio far to the right).
             el = ET.SubElement(
                 parent_el,
                 "asset-clip",
                 ref=asset_map.get(str(clip.path.resolve()), "r2"),
                 lane=str(clip.lane),
                 name=_clip_name(clip),
-                offset=_frame_rational(parent_offset_s + rel, seq_fps, "round"),
+                offset=_frame_rational(parent_in_pt + rel, seq_fps, "round"),
                 start=_frame_rational(clip.in_point, seq_fps, "round"),
                 duration=_frame_rational(clip.duration, seq_fps, "floor"),
             )

@@ -140,6 +140,12 @@ class WhisperSyncConfig:
     # for the Local Time-Stretch strategy). Length-preserving, so no extra drift.
     crossfade_enabled: bool = True
     crossfade_ms: int = 10
+    # Limit the atempo-factor change between consecutive pieces so a mid-word seam
+    # doesn't produce an audible tempo-break/stutter ("подга-га-товил"). On by
+    # default; max_tempo_jump is the largest allowed neighbour-to-neighbour factor
+    # difference (0.06 ≈ 6%). Only affects the piecewise strategies (2/3/4).
+    smooth_tempo: bool = True
+    max_tempo_jump: float = 0.06
     # Parallelism for the CPU-bound audio render (ffmpeg has no GPU audio filters):
     # each piece / Flex window is an independent ffmpeg call, spread across a process
     # pool. 0 = auto (os.cpu_count()); 1 = sequential. Output is identical regardless.

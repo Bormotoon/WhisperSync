@@ -9,6 +9,7 @@ import pytest
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.pipeline import (
     CameraGroup,
+    _smooth_piece_tempo,
     clip_pieces,
     compute_master_offsets,
     make_timeline_entries,
@@ -35,6 +36,37 @@ def test_clip_pieces_tracks_nonlinear_drift() -> None:
     # strategy 1 is a single global stretch
     _, global_pieces = clip_pieces(am, 12.0, 20.0, strategy_id=1, config=cfg)
     assert len(global_pieces) == 1
+
+
+def test_smooth_piece_tempo_limits_jumps_and_keeps_length() -> None:
+    # Alternating harsh factors (the tempo-break that causes "подга-га-товил").
+    pieces = [
+        (0.0, 1.0, 1.30),
+        (1.0, 1.0, 0.80),
+        (2.0, 1.0, 1.25),
+        (3.0, 1.0, 0.85),
+    ]
+    orig_out = sum(d / f for _, d, f in pieces)
+    smoothed = _smooth_piece_tempo(pieces, max_jump=0.06)
+
+    jumps = [abs(smoothed[i][2] - smoothed[i - 1][2]) for i in range(1, len(smoothed))]
+    assert max(jumps) <= 0.06 + 1e-6, "no seam may exceed the tempo-jump limit"
+    # recorder starts and IN durations are untouched (only factor changes)
+    assert [p[:2] for p in smoothed] == [p[:2] for p in pieces]
+    # total OUTPUT length preserved so sync doesn't drift
+    new_out = sum(d / f for _, d, f in smoothed)
+    assert abs(new_out - orig_out) < 1e-6
+
+
+def test_smooth_tempo_off_leaves_pieces(monkeypatch) -> None:  # noqa: ANN001
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(1, 11)
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
+    cfg = WhisperSyncConfig(smooth_tempo=False)
+    _, pieces = clip_pieces(am, 12.0, 20.0, strategy_id=2, config=cfg)
+    assert len(pieces) >= 3  # runs without smoothing, still produces pieces
 
 
 def _align(rec_start: float, k: float = 1.0) -> AlignmentMap:

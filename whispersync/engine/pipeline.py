@@ -337,7 +337,49 @@ def clip_pieces(
         pieces.append((ra, in_dur, factor))
 
     lead = max(0.0, bps[0][1])
+    if config.smooth_tempo and len(pieces) > 1:
+        pieces = _smooth_piece_tempo(pieces, config.max_tempo_jump)
     return lead, pieces
+
+
+def _smooth_piece_tempo(
+    pieces: list[tuple[float, float, float]], max_jump: float
+) -> list[tuple[float, float, float]]:
+    """Limit the tempo (atempo factor) change between consecutive pieces.
+
+    A large factor jump at a seam is heard as a stutter/tempo-break — especially
+    when the seam falls mid-word ("подготовил" → "подга-га-товил"). We iteratively
+    pull neighbouring factors toward each other until no adjacent pair differs by
+    more than ``max_jump``. Each piece keeps its recorder start and IN duration; only
+    its factor (hence output length) changes, so the timeline positions are barely
+    affected while the audible tempo steps disappear.
+    """
+    in_durs = [p[1] for p in pieces]
+    factors = [p[2] for p in pieces]
+    orig_out = sum(d / f for d, f in zip(in_durs, factors, strict=True))
+
+    for _ in range(100):
+        changed = False
+        for i in range(1, len(factors)):
+            diff = factors[i] - factors[i - 1]
+            if abs(diff) > max_jump:
+                excess = (abs(diff) - max_jump) / 2.0
+                sign = 1.0 if diff > 0 else -1.0
+                factors[i] -= sign * excess
+                factors[i - 1] += sign * excess
+                changed = True
+        if not changed:
+            break
+
+    # Smoothing changes each piece's output length; rescale all factors by a single
+    # constant so the TOTAL output duration is preserved (else speech would drift).
+    # A uniform scale keeps the smoothed shape and can't reintroduce a big jump.
+    new_out = sum(d / f for d, f in zip(in_durs, factors, strict=True))
+    scale = new_out / orig_out if orig_out > 0 else 1.0
+    return [
+        (ra, in_dur, max(0.5, min(2.0, f * scale)))
+        for (ra, in_dur, _old), f in zip(pieces, factors, strict=True)
+    ]
 
 
 def pause_spans_local(
@@ -756,7 +798,10 @@ def run_pipeline(
                 # Each piece is an independent ffmpeg cut/stretch; render them across
                 # the CPU pool (ffmpeg has no GPU audio filters). Order is preserved.
                 seg_paths = render_pieces(pieces, job.rec_path, tdp, fade_ms, workers)
-                out = audio_synced_dir / f"synced_{clip_idx:03d}.wav"
+                # Name the output after the clip (e.g. "DJI_0832_voice.wav") so the
+                # media file matches its timeline clip; fall back to an index.
+                voice_name = audio_clips[clip_idx].display_name or f"synced_{clip_idx:03d}"
+                out = audio_synced_dir / f"{voice_name}.wav"
                 # Duck inter-phrase pauses (if enabled) on an intermediate file, then
                 # the ducked result becomes the final output.
                 if config.pause_duck_enabled and job.pauses:
@@ -819,6 +864,12 @@ def run_pipeline(
                     except (RuntimeError, OSError) as e:
                         warnings.append(f"{vclip.path.name}: ambience extraction failed ({e})")
                         continue
+                    # Rename the separator's "…_(Instrumental)_<model>.wav" to a clean
+                    # clip-matched name ("DJI_0832_ambience.wav").
+                    amb_final = ambience_dir / f"{vclip.path.stem}_ambience.wav"
+                    with contextlib.suppress(OSError):
+                        amb.replace(amb_final)
+                        amb = amb_final
                     amb_clips.append(
                         MediaClip(
                             path=amb,
