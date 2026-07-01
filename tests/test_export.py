@@ -401,3 +401,29 @@ def test_validate_fcpxml_ignores_nested_compound_spine(tmp_path: Path) -> None:
     out = tmp_path / "nested.fcpxml"
     generate_fcpxml(plan, [_vinfo("/v/a.mov", 5.0)], out)
     assert validate_fcpxml(out)
+
+
+def test_validate_fcpxml_rejects_role_attrs_on_ref_clip(tmp_path: Path) -> None:
+    """Defense in depth: even if some future change reintroduces audioRole/
+    videoRole on a <ref-clip> (which generate_fcpxml itself no longer does),
+    validate_fcpxml must catch it — this is exactly the attribute Final Cut's DTD
+    rejects with 'No declaration for attribute audioRole of element ref-clip'."""
+    doc = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<!DOCTYPE fcpxml>\n"
+        '<fcpxml version="1.9">'
+        "<resources>"
+        '<media id="r1" name="voice"><sequence format="r0" duration="1/1s">'
+        "<spine/>"
+        "</sequence></media>"
+        "</resources>"
+        '<library><event><project><sequence format="r0" duration="1/1s">'
+        '<spine><asset-clip ref="r2" name="v" duration="1/1s">'
+        '<ref-clip ref="r1" name="voice" lane="-1" duration="1/1s" audioRole="Dialogue"/>'
+        "</asset-clip></spine>"
+        "</sequence></project></event></library>"
+        "</fcpxml>"
+    )
+    out = tmp_path / "bad_role.fcpxml"
+    out.write_text(doc)
+    assert not validate_fcpxml(out)

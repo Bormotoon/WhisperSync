@@ -20,7 +20,7 @@ from typing import Any
 
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.acoustic import refine_piece_boundaries
-from whispersync.engine.export import generate_fcpxml
+from whispersync.engine.export import generate_fcpxml, validate_fcpxml
 from whispersync.engine.matcher import align
 from whispersync.engine.media import MediaInfo, extract_audio_to_wav, probe
 from whispersync.engine.naming import natural_key
@@ -941,6 +941,14 @@ def run_pipeline(
             output_path.stem,
             audio_sample_rate=out_sr,  # matches the rendered synced WAVs
         )
+        # Safety net: catch a broken export (e.g. a DTD-invalid attribute) here,
+        # with a clear warning, instead of the user only finding out when Final
+        # Cut's import dialog rejects the whole file.
+        if not validate_fcpxml(output_path):
+            warnings.append(
+                "Generated FCPXML failed internal validation — Final Cut Pro may "
+                "refuse to import it. Please report this as a bug."
+            )
 
         # --- collect quality warnings from the best alignment overall ---
         all_aligned = [a for row in aligns for a in row if a is not None]

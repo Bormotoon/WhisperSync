@@ -407,6 +407,27 @@ def validate_fcpxml(path: Path) -> bool:
             logger.error("Root tag is '%s', expected 'fcpxml'", root.tag)
             return False
 
+        # Defense in depth: per the FCPXML DTD, <ref-clip> (compound/multicam
+        # references) does NOT declare audioRole/videoRole — only <asset-clip> does.
+        # Final Cut rejects the WHOLE import with "No declaration for attribute
+        # audioRole of element ref-clip" if either sneaks in, so catch it here
+        # ourselves rather than let the user find out from Final Cut. Checked
+        # document-wide (not just the main spine) since a compound clip's own
+        # nested spine could theoretically hold one too.
+        bad_role_clips = [
+            rc
+            for rc in root.iter("ref-clip")
+            if rc.get("audioRole") is not None or rc.get("videoRole") is not None
+        ]
+        if bad_role_clips:
+            logger.error(
+                "%d <ref-clip> element(s) carry audioRole/videoRole — Final Cut's "
+                "DTD does not declare these attributes for ref-clip and will refuse "
+                "the whole import",
+                len(bad_role_clips),
+            )
+            return False
+
         # Scope the search to the project's own spine under <library> — a compound
         # clip's <media> resource (under <resources>, earlier in document order) has
         # its own nested <spine> that must NOT be mistaken for the real one.
