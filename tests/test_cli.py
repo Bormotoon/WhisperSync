@@ -70,3 +70,12 @@ def test_timebase_and_camera_flags() -> None:
     )
     assert args.timebase_source == "recorder"
     assert args.audio_source_camera == "camB"
+
+
+def test_audio_compound_toggle() -> None:
+    parser = _build_parser()
+    assert parser.parse_args(["--video-dir", "v", "--audio-file", "r.wav"]).audio_compound is None
+    args = parser.parse_args(["--video-dir", "v", "--audio-file", "r.wav", "--audio-compound"])
+    assert args.audio_compound is True
+    args = parser.parse_args(["--video-dir", "v", "--audio-file", "r.wav", "--no-audio-compound"])
+    assert args.audio_compound is False

@@ -199,6 +199,18 @@ class MainWindow(QMainWindow):
         )
         options_layout.addRow(self.ambience_check)
 
+        # Compound clip — keep each speech piece as its own editable clip (inside a
+        # single compound clip sized to the video) instead of one assembled WAV.
+        # Off by default (monolithic assembly stays the default).
+        self.compound_check = QCheckBox("Export voice as compound clip (separate pieces)")
+        self.compound_check.setChecked(self.config.audio_compound)
+        self.compound_check.setToolTip(
+            "Keep every speech piece as its own clip, positioned inside a compound "
+            "clip the size of the video, instead of one continuous WAV. Lets you "
+            "crossfade/nudge/overlap pieces by hand in Final Cut."
+        )
+        options_layout.addRow(self.compound_check)
+
         left_layout.addWidget(options_group)
 
         self.btn_sync = QPushButton("SYNC")
@@ -413,6 +425,7 @@ class MainWindow(QMainWindow):
         db = self.duck_slider.value()
         self.config.pause_duck_db = -200.0 if db <= -60 else float(db)
         self.config.ambience_track = self.ambience_check.isChecked()
+        self.config.audio_compound = self.compound_check.isChecked()
 
         self.right_tabs.setCurrentIndex(0)  # show the Run tab during processing
         self.btn_sync.setEnabled(False)

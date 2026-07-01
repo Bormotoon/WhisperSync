@@ -109,12 +109,88 @@ def generate_fcpxml(
         return fid
 
     seq_fmt = _format_for(seq_fps, seq_w, seq_h)  # r1
+    # Frame duration (seconds) of the sequence grid, used to align spine offsets —
+    # including inside a compound clip's own nested spine (built below).
+    frame_s = float(seq_fps.denominator) / float(seq_fps.numerator)
 
     asset_map: dict[str, str] = {}
     base_dir = output_path.parent.resolve()
+    # Compound audio clips (clip.subclips set) get a <media> resource instead of a
+    # plain <asset>; keyed by object identity since these MediaClips only live for
+    # the duration of this call.
+    media_map: dict[int, str] = {}
 
     seen_paths: set[str] = set()
     for clip in plan.clips:
+        if clip.kind == "audio" and clip.subclips:
+            # COMPOUND CLIP: each speech piece stays its own asset, placed at its own
+            # offset inside a nested <media><sequence><spine>, sized to the clip's
+            # full (video) duration. The main sequence later references this <media>
+            # via a <ref-clip> instead of an <asset-clip>, so every piece remains an
+            # individually editable clip in Final Cut (for hand crossfades/nudges).
+            subs = sorted(clip.subclips, key=lambda s: s.offset)
+            sub_asset_ids: list[str] = []
+            for sub in subs:
+                sub_path_str = str(sub.path.resolve())
+                sub_asset_id = asset_map.get(sub_path_str)
+                if sub_asset_id is None:
+                    sub_asset_id = next_rid()
+                    asset_map[sub_path_str] = sub_asset_id
+                    sub_asset_attrs = {
+                        "id": sub_asset_id,
+                        "name": sub.path.stem,
+                        "start": "0s",
+                        "duration": to_rational(sub.duration + sub.in_point, sample_rate),
+                        "hasVideo": "0",
+                        "hasAudio": "1",
+                        "audioSources": "1",
+                        "audioChannels": "1",
+                        "audioRate": str(sample_rate),
+                    }
+                    sub_asset_el = ET.SubElement(resources, "asset", sub_asset_attrs)
+                    ET.SubElement(
+                        sub_asset_el,
+                        "media-rep",
+                        kind="original-media",
+                        src=_media_src(sub.path, base_dir),
+                    )
+                sub_asset_ids.append(sub_asset_id)
+
+            media_id = next_rid()
+            media_name = clip.display_name or clip.path.stem
+            media_el = ET.SubElement(resources, "media", id=media_id, name=media_name)
+            inner_seq = ET.SubElement(
+                media_el,
+                "sequence",
+                format=seq_fmt,
+                duration=_frame_rational(clip.duration, seq_fps, "ceil"),
+            )
+            inner_spine = ET.SubElement(inner_seq, "spine")
+            cursor = 0.0
+            for idx, (sub, sub_asset_id) in enumerate(zip(subs, sub_asset_ids, strict=True)):
+                if sub.offset > cursor + frame_s / 2:
+                    ET.SubElement(
+                        inner_spine,
+                        "gap",
+                        name="Gap",
+                        offset=_frame_rational(cursor, seq_fps, "round"),
+                        start="0s",
+                        duration=_frame_rational(sub.offset - cursor, seq_fps, "round"),
+                    )
+                    cursor = sub.offset
+                ET.SubElement(
+                    inner_spine,
+                    "asset-clip",
+                    ref=sub_asset_id,
+                    name=f"{media_name}_piece{idx:03d}",
+                    offset=_frame_rational(cursor, seq_fps, "round"),
+                    start=_frame_rational(sub.in_point, seq_fps, "round"),
+                    duration=_frame_rational(sub.duration, seq_fps, "floor"),
+                )
+                cursor += sub.duration
+            media_map[id(clip)] = media_id
+            continue
+
         path_str = str(clip.path.resolve())
         if path_str in seen_paths:
             continue
@@ -182,9 +258,6 @@ def generate_fcpxml(
     video_clips = sorted((c for c in plan.clips if c.kind == "video"), key=lambda c: c.offset)
     audio_clips = sorted((c for c in plan.clips if c.kind != "video"), key=lambda c: c.offset)
 
-    # Frame duration (seconds) of the sequence grid, used to align spine offsets.
-    frame_s = float(seq_fps.denominator) / float(seq_fps.numerator)
-
     def _clip_name(clip: MediaClip) -> str:
         return clip.display_name or clip.path.stem
 
@@ -234,16 +307,30 @@ def generate_fcpxml(
         # document is still valid.
         gap = ET.SubElement(spine, "gap", name="Gap", offset="0s", start="0s", duration=seq_dur)
         for clip in audio_clips:
-            el = ET.SubElement(
-                gap,
-                "asset-clip",
-                ref=asset_map.get(str(clip.path.resolve()), "r2"),
-                lane=str(clip.lane),
-                name=_clip_name(clip),
-                offset=_frame_rational(clip.offset, seq_fps, "round"),
-                start=_frame_rational(clip.in_point, seq_fps, "round"),
-                duration=_frame_rational(clip.duration, seq_fps, "floor"),
-            )
+            offset_str = _frame_rational(clip.offset, seq_fps, "round")
+            duration_str = _frame_rational(clip.duration, seq_fps, "floor")
+            if clip.subclips:
+                el = ET.SubElement(
+                    gap,
+                    "ref-clip",
+                    ref=media_map[id(clip)],
+                    lane=str(clip.lane),
+                    name=_clip_name(clip),
+                    offset=offset_str,
+                    start="0s",
+                    duration=duration_str,
+                )
+            else:
+                el = ET.SubElement(
+                    gap,
+                    "asset-clip",
+                    ref=asset_map.get(str(clip.path.resolve()), "r2"),
+                    lane=str(clip.lane),
+                    name=_clip_name(clip),
+                    offset=offset_str,
+                    start=_frame_rational(clip.in_point, seq_fps, "round"),
+                    duration=duration_str,
+                )
             _set_role(el, clip)
     else:
         # Attach each audio clip to the spine video clip covering its start.
@@ -263,16 +350,32 @@ def generate_fcpxml(
             # at the parent's `start` value (its in_point), NOT at the parent's spine
             # position. So offset = parent_in_point + rel (was mistakenly the spine
             # offset + rel, which pushed the audio far to the right).
-            el = ET.SubElement(
-                parent_el,
-                "asset-clip",
-                ref=asset_map.get(str(clip.path.resolve()), "r2"),
-                lane=str(clip.lane),
-                name=_clip_name(clip),
-                offset=_frame_rational(parent_in_pt + rel, seq_fps, "round"),
-                start=_frame_rational(clip.in_point, seq_fps, "round"),
-                duration=_frame_rational(clip.duration, seq_fps, "floor"),
-            )
+            offset_str = _frame_rational(parent_in_pt + rel, seq_fps, "round")
+            duration_str = _frame_rational(clip.duration, seq_fps, "floor")
+            if clip.subclips:
+                # Compound clip: reference the <media> resource built above. Its own
+                # nested sequence always starts at 0, so `start` here is just "0s".
+                el = ET.SubElement(
+                    parent_el,
+                    "ref-clip",
+                    ref=media_map[id(clip)],
+                    lane=str(clip.lane),
+                    name=_clip_name(clip),
+                    offset=offset_str,
+                    start="0s",
+                    duration=duration_str,
+                )
+            else:
+                el = ET.SubElement(
+                    parent_el,
+                    "asset-clip",
+                    ref=asset_map.get(str(clip.path.resolve()), "r2"),
+                    lane=str(clip.lane),
+                    name=_clip_name(clip),
+                    offset=offset_str,
+                    start=_frame_rational(clip.in_point, seq_fps, "round"),
+                    duration=duration_str,
+                )
             _set_role(el, clip)
 
     tree = ET.ElementTree(root)
@@ -298,20 +401,25 @@ def validate_fcpxml(path: Path) -> bool:
             logger.error("Root tag is '%s', expected 'fcpxml'", root.tag)
             return False
 
-        spine = root.find(".//spine")
+        # Scope the search to the project's own spine under <library> — a compound
+        # clip's <media> resource (under <resources>, earlier in document order) has
+        # its own nested <spine> that must NOT be mistaken for the real one.
+        library = root.find("library")
+        spine = library.find(".//spine") if library is not None else None
         if spine is None:
             logger.error("No <spine> found")
             return False
 
         # Video clips now sit directly in the spine (primary storyline); audio is
-        # connected to them. A valid document has at least one asset-clip somewhere
-        # in the spine (directly, or nested under a clip / gap).
-        clips = spine.findall(".//asset-clip")
+        # connected to them (either a plain asset-clip, or a ref-clip for a compound
+        # clip). A valid document has at least one clip somewhere in the spine
+        # (directly, or nested under a clip / gap).
+        clips = spine.findall(".//asset-clip") + spine.findall(".//ref-clip")
         if not clips:
-            logger.error("No <asset-clip> found in spine")
+            logger.error("No <asset-clip>/<ref-clip> found in spine")
             return False
 
-        logger.info("FCPXML valid: %d asset-clip(s) in spine", len(clips))
+        logger.info("FCPXML valid: %d clip(s) in spine", len(clips))
         return True
 
     except ET.ParseError as e:

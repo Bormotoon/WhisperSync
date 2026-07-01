@@ -140,12 +140,18 @@ class WhisperSyncConfig:
     # for the Local Time-Stretch strategy). Length-preserving, so no extra drift.
     crossfade_enabled: bool = True
     crossfade_ms: int = 10
-    # Limit the atempo-factor change between consecutive pieces so a mid-word seam
-    # doesn't produce an audible tempo-break/stutter ("подга-га-товил"). On by
-    # default; max_tempo_jump is the largest allowed neighbour-to-neighbour factor
-    # difference (0.06 ≈ 6%). Only affects the piecewise strategies (2/3/4).
-    smooth_tempo: bool = True
+    # DISABLED BY DEFAULT: smoothing the per-piece atempo factors removes the
+    # mid-word tempo-break stutter but redistributes each piece's output length, so
+    # speech drifts off the picture (a parabolic error up to ~1.4s mid-clip). The
+    # per-piece factors ARE the sync, so they must not be averaged. Kept as an opt-in
+    # only; the real stutter fix is seam-snap-to-silence (keeps exact factors).
+    smooth_tempo: bool = False
     max_tempo_jump: float = 0.06
+    # Export the synced voice as a COMPOUND clip of separate speech pieces (each at
+    # its own position, editable) instead of one assembled WAV. Lets the editor
+    # crossfade / nudge / overlap pieces by hand — sidesteps the sync-vs-stutter
+    # tradeoff of monolithic assembly. Off by default (monolith stays the default).
+    audio_compound: bool = False
     # Parallelism for the CPU-bound audio render (ffmpeg has no GPU audio filters):
     # each piece / Flex window is an independent ffmpeg call, spread across a process
     # pool. 0 = auto (os.cpu_count()); 1 = sequential. Output is identical regardless.

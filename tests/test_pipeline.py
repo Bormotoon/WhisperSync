@@ -10,6 +10,7 @@ from whispersync.config import WhisperSyncConfig
 from whispersync.engine.pipeline import (
     CameraGroup,
     _smooth_piece_tempo,
+    build_subclips,
     clip_pieces,
     compute_master_offsets,
     make_timeline_entries,
@@ -67,6 +68,26 @@ def test_smooth_tempo_off_leaves_pieces(monkeypatch) -> None:  # noqa: ANN001
     cfg = WhisperSyncConfig(smooth_tempo=False)
     _, pieces = clip_pieces(am, 12.0, 20.0, strategy_id=2, config=cfg)
     assert len(pieces) >= 3  # runs without smoothing, still produces pieces
+
+
+def test_build_subclips_lands_at_contiguous_assembly_positions() -> None:
+    """Compound mode must place each piece exactly where assemble_continuous would
+    have (lead silence, then pieces back-to-back), just as separate files/clips."""
+    pieces = [(0.0, 2.0, 1.0), (5.0, 3.0, 1.5), (10.0, 1.0, 0.5)]
+    seg_paths = [Path(f"segment_{i:04d}.wav") for i in range(3)]
+
+    subs = build_subclips(pieces, seg_paths, lead=0.5)
+
+    # out_dur = in_dur / factor for each piece: 2.0, 2.0, 2.0
+    assert [round(s.duration, 6) for s in subs] == [2.0, 2.0, 2.0]
+    # cumulative offsets start after the lead silence, back-to-back (no gaps)
+    assert [round(s.offset, 6) for s in subs] == [0.5, 2.5, 4.5]
+    assert [s.in_point for s in subs] == [0.0, 5.0, 10.0]
+    assert [s.path for s in subs] == seg_paths
+
+
+def test_build_subclips_empty() -> None:
+    assert build_subclips([], [], lead=1.0) == []
 
 
 def _align(rec_start: float, k: float = 1.0) -> AlignmentMap:
