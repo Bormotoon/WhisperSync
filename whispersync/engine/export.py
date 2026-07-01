@@ -263,7 +263,13 @@ def generate_fcpxml(
 
     def _set_role(el: ET.Element, clip: MediaClip) -> None:
         # FCPX colours/groups clips by role: videoRole on video, audioRole on audio.
-        if clip.role:
+        # NOTE: ref-clip (compound clips) does NOT declare these attributes in the
+        # FCPXML DTD — only asset-clip/clip/gap/etc. do. Setting audioRole/videoRole
+        # on a ref-clip fails Final Cut's DTD validation on import ("No declaration
+        # for attribute audioRole of element ref-clip"), so skip it there. (Proper
+        # role assignment for a compound clip would need a nested
+        # <audio-role-source> child instead of an attribute.)
+        if clip.role and el.tag != "ref-clip":
             el.set("videoRole" if clip.kind == "video" else "audioRole", clip.role)
 
     def _spine_clip(clip: MediaClip, offset_str: str) -> ET.Element:

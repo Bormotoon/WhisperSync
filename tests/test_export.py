@@ -365,6 +365,12 @@ def test_compound_clip_emits_media_and_ref_clip(tmp_path: Path) -> None:
     # sized to the video clip, not to the sum of the pieces
     ticks, den = ref_clip.get("duration", "0/1s")[:-1].split("/")
     assert abs(int(ticks) / int(den) - 10.0) < 0.05
+    # audioRole/videoRole are NOT declared for ref-clip in the FCPXML DTD — Final
+    # Cut refuses to import a document with either attribute set here (even though
+    # clip.role == "Dialogue" above), so they must be omitted despite the role
+    # being set on the MediaClip.
+    assert ref_clip.get("audioRole") is None
+    assert ref_clip.get("videoRole") is None
 
     # No stray <asset-clip> was created for the compound clip's own nominal path.
     top_level_asset_srcs = {
