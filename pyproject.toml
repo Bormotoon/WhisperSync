@@ -86,3 +86,6 @@ disable_error_code = ["override", "union-attr"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: exercises real ffmpeg (slow-ish, no GPU needed); skip with -m 'not integration'",
+]

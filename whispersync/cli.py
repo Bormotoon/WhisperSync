@@ -209,9 +209,60 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run", action="store_true", help="Only scan + transcribe + align, skip processing"
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="After a successful run, measure realized lip-sync lag per clip via "
+        "GCC-PHAT cross-correlation (see tools/verify_sync.py) and print a summary",
+    )
     parser.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
     return parser
+
+
+# ---------------------------------------------------------------------------
+# --verify: post-render self-check
+# ---------------------------------------------------------------------------
+
+
+def _run_verify(result: Any, json_output: bool) -> list[dict[str, Any]]:
+    """Measure realized lag for every (video, synced voice) pair in the sync
+    result, using the same GCC-PHAT harness as tools/verify_sync.py. Video
+    audio is decoded fresh (via ffmpeg) rather than reusing any transcription
+    scratch file, since those are cleaned up by the time rendering finishes.
+    """
+    from tools.verify_sync import measure
+
+    video_clips = {c.path.stem: c.path for c in result.plan.clips if c.kind == "video"}
+    reports: list[dict[str, Any]] = []
+    for clip in result.plan.clips:
+        if clip.kind != "audio" or clip.role != "Dialogue":
+            continue
+        # "<video_stem>_voice[_<recorder>]" -> match back to its video clip.
+        video_path = next(
+            (p for stem, p in video_clips.items() if (clip.display_name or "").startswith(stem)),
+            None,
+        )
+        if video_path is None:
+            continue
+        try:
+            report = measure(video_path, clip.path)
+        except (RuntimeError, ValueError) as e:
+            _print(f"  verify: {clip.path.name}: measurement failed ({e})", to_stderr=json_output)
+            continue
+        summary = report.summary()
+        reports.append({"clip": clip.display_name or clip.path.stem, **summary})
+        if not json_output:
+            median = summary.get("median_abs_lag_ms")
+            p90 = summary.get("p90_abs_lag_ms")
+            median_str = f"{median:.1f}" if median is not None else "n/a"
+            p90_str = f"{p90:.1f}" if p90 is not None else "n/a"
+            _print(
+                f"  verify: {clip.display_name or clip.path.stem}: "
+                f"median {median_str} ms, p90 {p90_str} ms "
+                f"({summary['n_confident']}/{summary['n_total']} confident points)"
+            )
+    return reports
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +495,7 @@ def main() -> None:
                 output_path=output_path,
                 progress_callback=progress_callback,
             )
+            verify_reports = _run_verify(result, args.json_output) if args.verify else None
             if args.json_output:
                 report = {
                     "offset": result.alignment.offset,
@@ -453,6 +505,8 @@ def main() -> None:
                     "fcpxml_path": str(result.fcpxml_path),
                     "warnings": result.warnings,
                 }
+                if verify_reports is not None:
+                    report["verify"] = verify_reports
                 print(json.dumps(report, indent=2))
             else:
                 _print_sync_result(result)

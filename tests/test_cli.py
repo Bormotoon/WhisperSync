@@ -60,6 +60,13 @@ def test_crossfade_toggle() -> None:
     assert args.crossfade_ms == 20
 
 
+def test_verify_flag_defaults_off() -> None:
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav"])
+    assert args.verify is False
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav", "--verify"])
+    assert args.verify is True
+
+
 def test_timebase_and_camera_flags() -> None:
     args = _build_parser().parse_args(
         [

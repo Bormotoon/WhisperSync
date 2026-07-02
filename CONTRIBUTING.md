@@ -11,28 +11,45 @@ cd WhisperSync
 python -m venv venv
 source venv/bin/activate            # Windows: venv\Scripts\activate
 pip install -r requirements-dev.txt # includes runtime deps + tooling
-python whispersync/engine/system_check.py
+python -m whispersync.engine.system_check
 ```
 
 You also need **ffmpeg** and **ffprobe** in your `PATH`.
+
+### Reproducible installs (lock files)
+
+`requirements.txt`/`requirements-dev.txt` use version ranges. `requirements.lock`/
+`requirements-dev.lock` are a pinned, known-good snapshot (generated on Python
+3.12 via `uv pip compile`) — CI installs from the lock file on 3.12 and from the
+ranges on the other matrix versions, so both paths get exercised. Regenerate the
+locks after changing a `requirements*.txt` file:
+
+```bash
+uv pip compile requirements.txt -o requirements.lock --python-version 3.12
+uv pip compile requirements-dev.txt -o requirements-dev.lock --python-version 3.12
+```
 
 ## Project layout
 
 - `whispersync/engine/` — pure logic (transcription, matching, strategies, FCPXML).
   Business logic must not depend on Qt.
 - `whispersync/gui/` — PyQt6 interface (window, worker, widgets, theme).
-- `tests/` — pytest suite (no GPU/ffmpeg required; heavy paths are covered with
-  synthetic data and mocks).
+- `tools/` — standalone developer tools (e.g. `verify_sync.py`, the realized
+  lip-sync-lag measurement harness), not part of the installed package.
+- `tests/` — pytest suite. Most tests are pure logic (no GPU/ffmpeg required);
+  a smaller set marked `@pytest.mark.integration` exercises real ffmpeg through
+  the render path and is skipped automatically if ffmpeg isn't on `PATH`
+  (`pytest -m "not integration"` to exclude explicitly).
 
 ## Code style & quality gates
 
 All of these must pass before a PR is merged (CI enforces them):
 
 ```bash
-ruff check whispersync/ tests/      # lint
-black --check whispersync/ tests/   # formatting (line length 100)
-mypy whispersync/ main.py           # type checking
-pytest                            # tests
+ruff check whispersync/ tools/ tests/      # lint
+black --check whispersync/ tools/ tests/   # formatting (line length 100)
+mypy whispersync/ tools/ main.py           # type checking
+pytest                                     # tests (incl. integration, if ffmpeg is present)
 ```
 
 - Type hints on all public functions; `from __future__ import annotations`.
