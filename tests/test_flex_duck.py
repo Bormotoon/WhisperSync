@@ -45,6 +45,53 @@ def test_pause_spans_empty_without_anchors() -> None:
     assert pause_spans_local(am, 10.0, 0.6, 0.6) == []
 
 
+# --- pause_spans_local (word-based: duck only where BOTH tracks are silent) --
+
+
+def test_pause_spans_word_based_requires_both_silent() -> None:
+    # k=1, offset=0 -> recorder time == local time, so this is easy to reason about.
+    am = AlignmentMap(anchors=[], offset=0.0, k=1.0, residual_ms=0.0)
+    # camera has a real gap [3, 8) with no words (a real pause)
+    cam_words = [(0.0, 1.0), (2.0, 3.0), (8.0, 9.0)]
+    # recorder has a LOW-CONFIDENCE word at [4, 5) inside that window that never
+    # became an anchor — it must NOT be ducked, because the recorder is not
+    # actually silent there (PROJECT_ANALYSIS.md §2.5).
+    rec_words = [(0.0, 1.0), (2.0, 3.0), (4.0, 5.0), (8.0, 9.0)]
+    spans = pause_spans_local(
+        am,
+        clip_duration=10.0,
+        gap_threshold=0.6,
+        min_pause=0.6,
+        cam_words=cam_words,
+        rec_words=rec_words,
+        rec_duration=10.0,
+    )
+    # the [3,8) camera gap is split by the recorder's word at [4,5) into two
+    # sub-pauses where BOTH tracks are silent: [3,4) and [5,8).
+    assert (3.0, 4.0) in spans
+    assert (5.0, 8.0) in spans
+    # no span covers the recorder's actual word
+    assert not any(a < 4.5 < b for a, b in spans)
+
+
+def test_pause_spans_word_based_no_overlap_means_no_pause() -> None:
+    am = AlignmentMap(anchors=[], offset=0.0, k=1.0, residual_ms=0.0)
+    # camera silent [3, 8); recorder has continuous speech through that window
+    # AND through the tail, so there is no time where both tracks are silent.
+    cam_words = [(0.0, 1.0), (2.0, 3.0), (8.0, 10.0)]
+    rec_words = [(0.0, 10.0)]  # one long word/segment spanning the whole clip
+    spans = pause_spans_local(
+        am,
+        clip_duration=10.0,
+        gap_threshold=0.6,
+        min_pause=0.6,
+        cam_words=cam_words,
+        rec_words=rec_words,
+        rec_duration=10.0,
+    )
+    assert spans == []
+
+
 # --- _duck_pause_expr ------------------------------------------------------
 
 

@@ -154,13 +154,15 @@ class WhisperSyncConfig:
     # corrections; "atempo"/"resample" force one method. See
     # timestretch.RESAMPLE_CONFORM_MAX_DEVIATION.
     stretch_method: str = "auto"
-    # DISABLED BY DEFAULT: smoothing the per-piece atempo factors removes the
-    # mid-word tempo-break stutter but redistributes each piece's output length, so
-    # speech drifts off the picture (a parabolic error up to ~1.4s mid-clip). The
-    # per-piece factors ARE the sync, so they must not be averaged. Kept as an opt-in
-    # only; the real stutter fix is seam-snap-to-silence (keeps exact factors).
-    smooth_tempo: bool = False
-    max_tempo_jump: float = 0.06
+    # Seam-snap-to-silence: interior piece boundaries (Local Time-Stretch / Hybrid)
+    # are nudged to the nearest inter-word silence in the recorder, within this
+    # many seconds, so a seam never lands mid-word — the actual fix for the
+    # mid-word tempo-break stutter ("подготовил" -> "подга-га-товил"). Unlike the
+    # old factor-smoothing approach (removed: it fixed the stutter by averaging
+    # atempo factors, but that redistributed each piece's output length and let
+    # speech drift off the picture by up to ~1.4s), this only moves WHERE the cut
+    # happens — every piece's tempo factor, and hence the sync, is unchanged.
+    seam_snap_max_s: float = 0.4
     # Parallelism for the CPU-bound audio render (ffmpeg has no GPU audio filters):
     # each piece / Flex window is an independent ffmpeg call, spread across a process
     # pool. 0 = auto (os.cpu_count()); 1 = sequential. Output is identical regardless.

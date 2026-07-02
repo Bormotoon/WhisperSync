@@ -34,7 +34,10 @@ def test_multiple_audio_files_accumulate() -> None:
     assert args.strategy == 4
 
 
-def test_strategy_choices_include_hybrid() -> None:
+def test_strategy_choices_include_deprecated_4_alias() -> None:
+    # 4 still parses (main() remaps it to 3 with a deprecation warning — see
+    # test below); the parser itself must keep accepting it so existing
+    # scripts/configs don't hard-fail.
     args = _build_parser().parse_args(
         ["--video-dir", "v", "--audio-file", "r.wav", "--strategy", "4"]
     )

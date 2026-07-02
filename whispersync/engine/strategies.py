@@ -185,58 +185,14 @@ class LocalTimeStretchStrategy(SyncStrategy):
         return clips, ops
 
 
-class SilencePaddingStrategy(SyncStrategy):
-    strategy_id = 3
-    name = "Silence Padding"
-    description = "Speech left untouched (zero pitch shift); only inter-phrase gaps move."
-
-    def plan_clip(
-        self,
-        alignment: AlignmentMap,
-        rec_audio_path: Path,
-        clip_offset: float,
-        clip_duration: float,
-        rec_duration: float,
-        config: WhisperSyncConfig,
-    ) -> ClipPlan:
-        anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
-        if not anchors:
-            return GlobalLinearStrategy().plan_clip(
-                alignment, rec_audio_path, clip_offset, clip_duration, rec_duration, config
-            )
-
-        clips: list[MediaClip] = []
-        ops: list[AudioOp] = []
-        for rs, re in _speech_blocks(anchors, config.phrase_gap_threshold):
-            rs_c = _clamp(rs, 0.0, rec_duration)
-            re_c = _clamp(max(re, rs + _MIN_BLOCK_DUR), 0.0, rec_duration)
-            dur = re_c - rs_c
-            if dur <= 1e-4:
-                continue
-            local_start = _rec_to_local(alignment, rs_c)
-            clips.append(
-                MediaClip(
-                    path=rec_audio_path,
-                    kind="audio",
-                    offset=clip_offset + local_start,
-                    in_point=0.0,
-                    duration=dur,
-                    lane=-1,
-                )
-            )
-            ops.append(
-                {
-                    "type": "extract",
-                    "input": str(rec_audio_path),
-                    "start": rs_c,
-                    "duration": dur,
-                }
-            )
-        return clips, ops
-
-
 class HybridStrategy(SyncStrategy):
-    strategy_id = 4
+    # Was strategy_id 4 ("Hybrid (Global + Silence)"); the old strategy 3
+    # ("Silence Padding") was merged away — in the real render path (pipeline
+    # .clip_pieces) strategies 3 and 4 had become byte-identical (both thinned
+    # anchors to ~one per phrase and time-stretched each phrase), so "Silence
+    # Padding" no longer delivered its documented zero-pitch-shift promise. This
+    # is the one that survives, renumbered to 3. See PROJECT_ANALYSIS.md §2.1.
+    strategy_id = 3
     name = "Hybrid (Global + Silence)"
     description = (
         "Each phrase is tempo-corrected by the clip's global K, then placed at "
@@ -294,8 +250,7 @@ class HybridStrategy(SyncStrategy):
 STRATEGIES: dict[int, type[SyncStrategy]] = {
     1: GlobalLinearStrategy,
     2: LocalTimeStretchStrategy,
-    3: SilencePaddingStrategy,
-    4: HybridStrategy,
+    3: HybridStrategy,
 }
 
 

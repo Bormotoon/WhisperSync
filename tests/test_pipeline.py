@@ -9,10 +9,11 @@ import pytest
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.pipeline import (
     CameraGroup,
-    _smooth_piece_tempo,
+    _snap_to_word_gap,
     clip_pieces,
     compute_master_offsets,
     make_timeline_entries,
+    recorder_word_gaps,
     scan_cameras,
 )
 from whispersync.models import AlignmentMap, Anchor, MediaClip
@@ -38,35 +39,65 @@ def test_clip_pieces_tracks_nonlinear_drift() -> None:
     assert len(global_pieces) == 1
 
 
-def test_smooth_piece_tempo_limits_jumps_and_keeps_length() -> None:
-    # Alternating harsh factors (the tempo-break that causes "подга-га-товил").
-    pieces = [
-        (0.0, 1.0, 1.30),
-        (1.0, 1.0, 0.80),
-        (2.0, 1.0, 1.25),
-        (3.0, 1.0, 0.85),
-    ]
-    orig_out = sum(d / f for _, d, f in pieces)
-    smoothed = _smooth_piece_tempo(pieces, max_jump=0.06)
-
-    jumps = [abs(smoothed[i][2] - smoothed[i - 1][2]) for i in range(1, len(smoothed))]
-    assert max(jumps) <= 0.06 + 1e-6, "no seam may exceed the tempo-jump limit"
-    # recorder starts and IN durations are untouched (only factor changes)
-    assert [p[:2] for p in smoothed] == [p[:2] for p in pieces]
-    # total OUTPUT length preserved so sync doesn't drift
-    new_out = sum(d / f for _, d, f in smoothed)
-    assert abs(new_out - orig_out) < 1e-6
+def test_recorder_word_gaps_finds_silence_midpoints() -> None:
+    # word A: [1.0, 1.5], word B: [2.0, 2.5] -> silence [1.5, 2.0], midpoint 1.75
+    gaps = recorder_word_gaps([(1.0, 1.5), (2.0, 2.5)])
+    assert gaps == [1.75]
 
 
-def test_smooth_tempo_off_leaves_pieces(monkeypatch) -> None:  # noqa: ANN001
+def test_recorder_word_gaps_ignores_touching_or_overlapping_words() -> None:
+    gaps = recorder_word_gaps([(1.0, 2.0), (2.0, 3.0), (2.9, 3.5)])
+    assert gaps == []
+
+
+def test_snap_to_word_gap_within_range() -> None:
+    assert _snap_to_word_gap(10.3, [10.5], max_snap_s=0.4) == 10.5
+
+
+def test_snap_to_word_gap_too_far_is_unchanged() -> None:
+    assert _snap_to_word_gap(10.0, [10.5], max_snap_s=0.4) == 10.0
+
+
+def test_snap_to_word_gap_no_gaps_is_unchanged() -> None:
+    assert _snap_to_word_gap(10.0, [], max_snap_s=0.4) == 10.0
+
+
+def test_clip_pieces_seam_snap_moves_breakpoint_to_nearest_gap() -> None:
+    # A single interior anchor at rec_time=5.0, with a recorder word-gap
+    # midpoint at 5.3 (within the default snap window) — the piece boundary
+    # should land on the gap, not exactly on the anchor (avoids a mid-word cut).
     anchors = [
-        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
-        for t in range(1, 11)
+        Anchor(cam_time=5.0, rec_time=5.0, token="w1", confidence=0.9),
     ]
     am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
-    cfg = WhisperSyncConfig(smooth_tempo=False)
-    _, pieces = clip_pieces(am, 12.0, 20.0, strategy_id=2, config=cfg)
-    assert len(pieces) >= 3  # runs without smoothing, still produces pieces
+    cfg = WhisperSyncConfig()
+
+    _, pieces_unsnapped = clip_pieces(
+        am, clip_duration=10.0, rec_duration=20.0, strategy_id=2, config=cfg
+    )
+    _, pieces_snapped = clip_pieces(
+        am,
+        clip_duration=10.0,
+        rec_duration=20.0,
+        strategy_id=2,
+        config=cfg,
+        rec_word_gaps=[5.3],
+    )
+    # unsnapped: the second piece starts exactly at the anchor (5.0)
+    assert abs(pieces_unsnapped[1][0] - 5.0) < 1e-9
+    # snapped: the second piece starts at the nearby word gap instead
+    assert abs(pieces_snapped[1][0] - 5.3) < 1e-9
+
+
+def test_clip_pieces_seam_snap_respects_max_distance() -> None:
+    # A gap far outside seam_snap_max_s must not move the breakpoint.
+    anchors = [Anchor(cam_time=5.0, rec_time=5.0, token="w1", confidence=0.9)]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
+    cfg = WhisperSyncConfig(seam_snap_max_s=0.4)
+    _, pieces = clip_pieces(
+        am, clip_duration=10.0, rec_duration=20.0, strategy_id=2, config=cfg, rec_word_gaps=[7.0]
+    )
+    assert abs(pieces[1][0] - 5.0) < 1e-9  # far gap ignored, boundary stays put
 
 
 def _align(rec_start: float, k: float = 1.0) -> AlignmentMap:

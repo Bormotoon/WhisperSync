@@ -255,7 +255,7 @@ def test_display_names_and_roles(tmp_path: Path) -> None:
             role="Effects",
         ),
     ]
-    plan = SyncPlan(strategy_id=4, clips=clips, audio_ops=[], total_duration=10.0)
+    plan = SyncPlan(strategy_id=3, clips=clips, audio_ops=[], total_duration=10.0)
     out = tmp_path / "roles.fcpxml"
     generate_fcpxml(plan, [_vinfo("/v/DJI_0830.MOV", 10.0)], out, audio_sample_rate=48000)
     root = ET.parse(out).getroot()

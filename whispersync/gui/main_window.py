@@ -131,12 +131,12 @@ class MainWindow(QMainWindow):
         strategy_layout = QVBoxLayout(strategy_group)
         self.radio1 = QRadioButton("1 — Global Linear Calibration")
         self.radio2 = QRadioButton("2 — Local Time-Stretch")
-        self.radio3 = QRadioButton("3 — Silence Padding (pitch-safe)")
-        self.radio4 = QRadioButton("4 — Hybrid (Global + Silence)  ·  recommended")
-        # Strategy 4 (Hybrid) is the recommended default: near-perfect alignment at
-        # about half the distortion of pure stretching.
-        self.radio4.setChecked(True)
-        for r in (self.radio1, self.radio2, self.radio3, self.radio4):
+        self.radio3 = QRadioButton("3 — Hybrid (Global + Silence)  ·  recommended")
+        # Strategy 3 (Hybrid) is the recommended default: near-perfect alignment at
+        # about half the distortion of pure stretching. (The old strategy 3,
+        # "Silence Padding", was merged into Hybrid — see PROJECT_ANALYSIS.md §2.1.)
+        self.radio3.setChecked(True)
+        for r in (self.radio1, self.radio2, self.radio3):
             r.setMinimumHeight(26)  # never let the label clip vertically
             r.toggled.connect(self._on_strategy_changed)
             strategy_layout.addWidget(r)
@@ -324,8 +324,6 @@ class MainWindow(QMainWindow):
             return 2
         if self.radio3.isChecked():
             return 3
-        if self.radio4.isChecked():
-            return 4
         return 1
 
     def _on_strategy_changed(self) -> None:

@@ -12,6 +12,7 @@ from whispersync.engine.matcher import (
     normalize_token,
     normalize_words,
     reject_gross_outliers,
+    reject_residual_outliers,
 )
 from whispersync.models import Anchor, Segment, Transcript, Word
 
@@ -30,6 +31,65 @@ def test_reject_gross_outliers_keeps_smooth_drift() -> None:
 
     assert bad not in kept
     assert len(kept) >= 38  # every smooth-drift anchor survives
+
+
+def test_reject_gross_outliers_adaptive_window_on_short_lists() -> None:
+    # A short clip (e.g. 12 anchors) used to skip the filter entirely (it
+    # required >= 2*window=20 anchors) — a single 5s-off outlier would ride
+    # straight through. The window now shrinks instead of disabling the check.
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(12)
+    ]
+    bad = Anchor(cam_time=anchors[6].cam_time + 5.0, rec_time=6.0, token="x", confidence=0.9)
+    anchors[6] = bad
+
+    kept = reject_gross_outliers(anchors, window=10, tol_s=0.3)
+    assert bad not in kept
+    assert len(kept) == 11
+
+
+def test_reject_gross_outliers_too_short_is_a_noop() -> None:
+    # Fewer than 4 anchors: not enough signal to judge a "local neighbourhood",
+    # so nothing is dropped (matches the old behaviour for tiny lists).
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(3)
+    ]
+    assert reject_gross_outliers(anchors) == anchors
+
+
+def test_reject_residual_outliers_drops_isolated_mismatch() -> None:
+    # Anchors exactly on the line offset=0, k=1, except one anchor 2s off.
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(10)
+    ]
+    bad = Anchor(cam_time=anchors[5].cam_time + 2.0, rec_time=5.0, token="x", confidence=0.9)
+    anchors[5] = bad
+
+    kept = reject_residual_outliers(anchors, offset=0.0, k=1.0)
+    assert bad not in kept
+    assert len(kept) == 9
+
+
+def test_reject_residual_outliers_keeps_uniformly_noisy_alignment() -> None:
+    # All anchors modestly (but consistently) off the line — no single anchor
+    # stands out relative to the others, so nothing should be dropped.
+    anchors = [
+        Anchor(cam_time=float(t) + 0.05, rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(10)
+    ]
+    kept = reject_residual_outliers(anchors, offset=0.0, k=1.0)
+    assert len(kept) == len(anchors)
+
+
+def test_reject_residual_outliers_too_short_is_a_noop() -> None:
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(3)
+    ]
+    assert reject_residual_outliers(anchors, offset=0.0, k=1.0) == anchors
 
 
 def _make_transcript(
@@ -52,6 +112,17 @@ def test_normalize_token() -> None:
     assert normalize_token("Hello!") == "hello"
     assert normalize_token("  World,  ") == "world"
     assert normalize_token("...") == ""
+
+
+def test_normalize_token_strips_unicode_punctuation() -> None:
+    # string.punctuation (the old implementation) only covers ASCII, so
+    # Russian/typographic marks like the guillemets, em dash and ellipsis used
+    # to survive normalization and silently break anchor matching on Russian
+    # audio (PROJECT_ANALYSIS.md §2 / matcher.py). Both the token's own
+    # punctuation and the surrounding marks must be gone.
+    assert normalize_token("«Привет,") == "привет"
+    assert normalize_token("дом—мама") == "доммама"
+    assert normalize_token("вот…") == "вот"
 
 
 def test_find_anchors_basic() -> None:

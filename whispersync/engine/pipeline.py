@@ -263,12 +263,52 @@ def sequence_order_warnings(
     return warnings
 
 
+def recorder_word_gaps(rec_words: list[tuple[float, float]]) -> list[float]:
+    """Midpoints of the silent gaps between consecutive recorder words, sorted.
+
+    ``rec_words`` is a list of ``(start, end)`` word spans (need not be sorted).
+    Used by ``clip_pieces`` to snap piece boundaries away from mid-word cuts —
+    see ``_snap_to_word_gap``.
+    """
+    spans = sorted(rec_words)
+    return [(a[1] + b[0]) / 2.0 for a, b in zip(spans, spans[1:], strict=False) if b[0] > a[1]]
+
+
+def _snap_to_word_gap(rec_time: float, gaps: list[float], max_snap_s: float) -> float:
+    """Nudge ``rec_time`` to the nearest word-gap midpoint within ``max_snap_s``.
+
+    A piece boundary that falls in the middle of a spoken word (rather than in
+    the silence between words) creates an audible mid-word tempo break — a
+    stutter like "подготовил" -> "подга-га-товил" when the neighbouring piece's
+    atempo factor differs. Snapping the cut point to the nearest inter-word
+    silence removes the artifact without touching any piece's tempo factor
+    (unlike the old, now-removed, factor-smoothing approach, which fixed the
+    stutter by averaging factors but let speech drift off the picture by up to
+    ~1.4s). Returns ``rec_time`` unchanged if no gap is close enough.
+    """
+    if not gaps:
+        return rec_time
+    import bisect
+
+    i = bisect.bisect_left(gaps, rec_time)
+    candidates = [
+        g
+        for g in (gaps[i - 1] if i > 0 else None, gaps[i] if i < len(gaps) else None)
+        if g is not None
+    ]
+    if not candidates:
+        return rec_time
+    best = min(candidates, key=lambda g: abs(g - rec_time))
+    return best if abs(best - rec_time) <= max_snap_s else rec_time
+
+
 def clip_pieces(
     am: AlignmentMap,
     clip_duration: float,
     rec_duration: float,
     strategy_id: int,
     config: WhisperSyncConfig,
+    rec_word_gaps: list[float] | None = None,
 ) -> tuple[float, list[tuple[float, float, float]]]:
     """Contiguous recorder pieces that tile a camera clip, for a continuous warp.
 
@@ -279,8 +319,16 @@ def clip_pieces(
     lands under the picture. ``lead_silence`` is the silence (seconds) before the
     first piece, non-zero only when the recorder does not reach the clip start.
 
-    Strategy controls the breakpoint density: 1 = one global stretch, 2 = a piece
-    per anchor (tightest), 3/4 = a piece per phrase (smoother, fewer seams).
+    Strategy controls the breakpoint density: 1 = one global stretch (Global
+    Linear), 2 = a piece per anchor (Local Time-Stretch, tightest), 3 = a piece
+    per phrase (Hybrid — gentle per-phrase stretch, smoother, fewer seams; the
+    recommended default).
+
+    ``rec_word_gaps`` (recorder inter-word silence midpoints, from
+    ``recorder_word_gaps``) lets interior breakpoints snap away from mid-word
+    cuts — see ``_snap_to_word_gap``. Optional so callers/tests that don't have
+    a transcript handy can omit it (breakpoints then land exactly on anchors,
+    as before).
     """
     k = am.k or 1.0
 
@@ -313,14 +361,22 @@ def clip_pieces(
             return lead, []
         return lead, [(rec0, rec1 - rec0, (rec1 - rec0) / out_dur)]
 
-    # Strategies 3 & 4: fewer seams — thin anchors to roughly one per phrase.
-    if strategy_id in (3, 4):
+    # Strategy 3 (Hybrid): fewer seams — thin anchors to roughly one per phrase.
+    if strategy_id == 3:
         spacing = max(config.phrase_gap_threshold, 1.0)
         thinned: list[tuple[float, float]] = []
         for rt, ct in pts:
             if not thinned or rt - thinned[-1][0] >= spacing:
                 thinned.append((rt, ct))
         pts = thinned
+
+    # Snap each interior breakpoint's recorder time to the nearest inter-word
+    # silence (seam-snap-to-silence), so no piece boundary lands mid-word. The
+    # camera-time side is left as-is (it's still the anchor's real position);
+    # only WHERE in the recorder the cut happens moves, within a small window.
+    if rec_word_gaps:
+        pts = [(_snap_to_word_gap(rt, rec_word_gaps, config.seam_snap_max_s), ct) for rt, ct in pts]
+        pts.sort()
 
     # Clip edges use the global line; interior uses matched word times. Keep only
     # strictly-increasing (rec, local) breakpoints so every piece is sane.
@@ -342,72 +398,97 @@ def clip_pieces(
         pieces.append((ra, in_dur, factor))
 
     lead = max(0.0, bps[0][1])
-    if config.smooth_tempo and len(pieces) > 1:
-        pieces = _smooth_piece_tempo(pieces, config.max_tempo_jump)
     return lead, pieces
 
 
-def _smooth_piece_tempo(
-    pieces: list[tuple[float, float, float]], max_jump: float
-) -> list[tuple[float, float, float]]:
-    """Limit the tempo (atempo factor) change between consecutive pieces.
+def _silence_spans(
+    word_times: list[tuple[float, float]], track_duration: float, gap_threshold: float
+) -> list[tuple[float, float]]:
+    """Silence spans (no words) in a track: before the first word, between words
+    farther apart than ``gap_threshold``, and after the last word. Unsorted input
+    is sorted first; overlapping/out-of-order words are tolerated."""
+    words = sorted(word_times)
+    if not words:
+        return [(0.0, track_duration)] if track_duration > 0 else []
+    spans: list[tuple[float, float]] = []
+    if words[0][0] > 0:
+        spans.append((0.0, words[0][0]))
+    prev_end = words[0][1]
+    for start, end in words[1:]:
+        if start - prev_end > gap_threshold:
+            spans.append((prev_end, start))
+        prev_end = max(prev_end, end)
+    if track_duration - prev_end > 0:
+        spans.append((prev_end, track_duration))
+    return spans
 
-    A large factor jump at a seam is heard as a stutter/tempo-break — especially
-    when the seam falls mid-word ("подготовил" → "подга-га-товил"). We iteratively
-    pull neighbouring factors toward each other until no adjacent pair differs by
-    more than ``max_jump``. Each piece keeps its recorder start and IN duration; only
-    its factor (hence output length) changes, so the timeline positions are barely
-    affected while the audible tempo steps disappear.
-    """
-    in_durs = [p[1] for p in pieces]
-    factors = [p[2] for p in pieces]
-    orig_out = sum(d / f for d, f in zip(in_durs, factors, strict=True))
 
-    for _ in range(100):
-        changed = False
-        for i in range(1, len(factors)):
-            diff = factors[i] - factors[i - 1]
-            if abs(diff) > max_jump:
-                excess = (abs(diff) - max_jump) / 2.0
-                sign = 1.0 if diff > 0 else -1.0
-                factors[i] -= sign * excess
-                factors[i - 1] += sign * excess
-                changed = True
-        if not changed:
-            break
-
-    # Smoothing changes each piece's output length; rescale all factors by a single
-    # constant so the TOTAL output duration is preserved (else speech would drift).
-    # A uniform scale keeps the smoothed shape and can't reintroduce a big jump.
-    new_out = sum(d / f for d, f in zip(in_durs, factors, strict=True))
-    scale = new_out / orig_out if orig_out > 0 else 1.0
-    return [
-        (ra, in_dur, max(0.5, min(2.0, f * scale)))
-        for (ra, in_dur, _old), f in zip(pieces, factors, strict=True)
-    ]
+def _intersect_spans(
+    a_spans: list[tuple[float, float]], b_spans: list[tuple[float, float]]
+) -> list[tuple[float, float]]:
+    """Overlap of two lists of [start, end) spans (each internally non-overlapping
+    and sorted, as produced by ``_silence_spans``)."""
+    out: list[tuple[float, float]] = []
+    i = j = 0
+    while i < len(a_spans) and j < len(b_spans):
+        a0, a1 = a_spans[i]
+        b0, b1 = b_spans[j]
+        lo, hi = max(a0, b0), min(a1, b1)
+        if hi > lo:
+            out.append((lo, hi))
+        if a1 < b1:
+            i += 1
+        else:
+            j += 1
+    return out
 
 
 def pause_spans_local(
-    am: AlignmentMap, clip_duration: float, gap_threshold: float, min_pause: float
+    am: AlignmentMap,
+    clip_duration: float,
+    gap_threshold: float,
+    min_pause: float,
+    cam_words: list[tuple[float, float]] | None = None,
+    rec_words: list[tuple[float, float]] | None = None,
+    rec_duration: float | None = None,
 ) -> list[tuple[float, float]]:
-    """Inter-phrase pause spans in LOCAL (camera) time for the rendered clip.
+    """Inter-phrase pause spans in LOCAL (camera) time for the rendered clip —
+    where it is safe to duck because BOTH tracks are silent.
 
-    Anchors are sorted by camera time; a gap between consecutive anchors larger than
-    ``gap_threshold`` is a pause. Spans shorter than ``min_pause`` are dropped (not
-    worth ducking). Also covers the head/tail of the clip before the first / after
-    the last anchor. Returned spans are clamped to ``[0, clip_duration]`` and sorted.
+    When ``cam_words``/``rec_words`` (full word spans, not just matched anchors)
+    are given, a pause is the overlap of the camera's silence and the recorder's
+    silence (recorder words projected to local time via ``am``). This avoids
+    ducking real speech that simply failed to become an anchor (low confidence,
+    a word Whisper missed, or speech before the first/after the last matched
+    word) — see PROJECT_ANALYSIS.md §2.5. Falls back to the old anchor-gap
+    heuristic when word lists aren't available (e.g. existing callers/tests).
+    Spans shorter than ``min_pause`` are dropped; output is clamped to
+    ``[0, clip_duration]`` and sorted.
     """
-    cam_times = sorted(a.cam_time for a in am.anchors)
-    if not cam_times:
-        return []
-    spans: list[tuple[float, float]] = []
-    if cam_times[0] > min_pause:
-        spans.append((0.0, cam_times[0]))
-    for t0, t1 in zip(cam_times, cam_times[1:], strict=False):
-        if t1 - t0 > gap_threshold:
-            spans.append((t0, t1))
-    if clip_duration - cam_times[-1] > min_pause:
-        spans.append((cam_times[-1], clip_duration))
+    if cam_words is not None and rec_words is not None:
+        cam_silence = _silence_spans(cam_words, clip_duration, gap_threshold)
+        k = am.k or 1.0
+        rec_local = [((s - am.offset) / k, (e - am.offset) / k) for s, e in rec_words]
+        rec_local_duration = (
+            (rec_duration - am.offset) / k if rec_duration is not None else clip_duration
+        )
+        rec_silence_local = _silence_spans(
+            [(min(s, e), max(s, e)) for s, e in rec_local], rec_local_duration, gap_threshold
+        )
+        spans = _intersect_spans(cam_silence, rec_silence_local)
+    else:
+        cam_times = sorted(a.cam_time for a in am.anchors)
+        if not cam_times:
+            return []
+        spans = []
+        if cam_times[0] > min_pause:
+            spans.append((0.0, cam_times[0]))
+        for t0, t1 in zip(cam_times, cam_times[1:], strict=False):
+            if t1 - t0 > gap_threshold:
+                spans.append((t0, t1))
+        if clip_duration - cam_times[-1] > min_pause:
+            spans.append((cam_times[-1], clip_duration))
+
     out: list[tuple[float, float]] = []
     for a, b in spans:
         a = max(0.0, a)
@@ -630,9 +711,16 @@ def run_pipeline(
             rec_transcripts.append(rt)
             _save_tx(rt, rp.stem, rp)
 
+        # Inter-word silence midpoints per recorder, for seam-snap-to-silence
+        # (clip_pieces nudges piece boundaries away from mid-word cuts).
+        rec_word_gaps = [
+            recorder_word_gaps([(w.start, w.end) for w in rt.words]) for rt in rec_transcripts
+        ]
+
         # --- align each clip against each recorder ---
         # aligns[clip_idx][rec_idx] = AlignmentMap | None
         aligns: list[list[AlignmentMap | None]] = []
+        clip_transcripts: list[Transcript] = []
         n = len(video_clips)
         for idx, clip in enumerate(video_clips):
             video_status[idx] = "working"
@@ -645,6 +733,7 @@ def run_pipeline(
             clip_audio = extract_audio_to_wav(clip.path)
             cleanup_paths.append(clip_audio)
             clip_transcript = engine.transcribe(clip_audio)
+            clip_transcripts.append(clip_transcript)
             cam_name = cameras[clip_camera[idx]].name
             clip_stem = clip.path.stem if len(cameras) == 1 else f"{cam_name}_{clip.path.stem}"
             _save_tx(clip_transcript, clip_stem, clip.path)
@@ -671,7 +760,25 @@ def run_pipeline(
 
         # --- place clips on the master timeline from primary-recorder timecodes ---
         _notify("aligning", 1.0, "Placing clips on timeline...")
-        primary_aligns = [aligns[ci][primary] for ci in range(n)]
+        primary_aligns_raw = [aligns[ci][primary] for ci in range(n)]
+        # A RANSAC line fit through 2-3 anchors isn't a regression, it's a guess —
+        # placing a clip on it risks putting it at a wildly wrong timeline
+        # position with no warning beyond the later sequence-order check. Gate
+        # placement on min_anchors the same way `align()` already warns about a
+        # thin inlier count; a clip that doesn't clear the bar falls back to the
+        # existing "placed by order" path instead of trusting a weak fit. See
+        # PROJECT_ANALYSIS.md §2.10.
+        primary_aligns: list[AlignmentMap | None] = []
+        for i, am in enumerate(primary_aligns_raw):
+            if am is not None and len(am.anchors) < config.min_anchors:
+                warnings.append(
+                    f"{video_clips[i].path.name}: only {len(am.anchors)} anchor(s) "
+                    f"(minimum {config.min_anchors}) — placement is unreliable, "
+                    "falling back to filename order"
+                )
+                primary_aligns.append(None)
+            else:
+                primary_aligns.append(am)
         durations = [c.duration for c in video_clips]
         offsets, unaligned = compute_master_offsets(primary_aligns, durations)
         for clip, off in zip(video_clips, offsets, strict=True):
@@ -765,9 +872,14 @@ def run_pipeline(
 
         render_jobs: list[RenderJob] = []
 
-        def _add_job(vclip: MediaClip, am: AlignmentMap, ri: int, lane: int) -> None:
+        def _add_job(vclip: MediaClip, am: AlignmentMap, ri: int, lane: int, ci: int) -> None:
             lead, pieces = clip_pieces(
-                am, vclip.duration, rec_infos[ri].duration, strategy_id, config
+                am,
+                vclip.duration,
+                rec_infos[ri].duration,
+                strategy_id,
+                config,
+                rec_word_gaps=rec_word_gaps[ri],
             )
             if not pieces:
                 return
@@ -800,7 +912,13 @@ def run_pipeline(
                 cleanup_paths.append(cam_audio)
             pauses = (
                 pause_spans_local(
-                    am, vclip.duration, config.phrase_gap_threshold, config.pause_duck_min_pause_s
+                    am,
+                    vclip.duration,
+                    config.phrase_gap_threshold,
+                    config.pause_duck_min_pause_s,
+                    cam_words=[(w.start, w.end) for w in clip_transcripts[ci].words],
+                    rec_words=[(w.start, w.end) for w in rec_transcripts[ri].words],
+                    rec_duration=rec_infos[ri].duration,
                 )
                 if config.pause_duck_enabled
                 else []
@@ -828,12 +946,12 @@ def run_pipeline(
             if config.recorder_mode == "all":
                 for ri, am in enumerate(row):
                     if am is not None:
-                        _add_job(vclip, am, ri, lane=-(ri + 1))
+                        _add_job(vclip, am, ri, lane=-(ri + 1), ci=ci)
             else:  # "best": one lane, strongest recorder per clip
                 candidates = [(ri, am) for ri, am in enumerate(row) if am is not None]
                 if candidates:
                     best_ri, best_am = max(candidates, key=lambda t: len(t[1].anchors))
-                    _add_job(vclip, best_am, best_ri, lane=-1)
+                    _add_job(vclip, best_am, best_ri, lane=-1, ci=ci)
 
         audio_status = ["pending"] * len(audio_clips)
 

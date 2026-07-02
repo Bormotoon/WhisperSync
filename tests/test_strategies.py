@@ -48,19 +48,13 @@ def test_strategy1_single_clip() -> None:
     assert abs(float(ops[0]["factor"]) - 1.0 / k) < 1e-4
 
 
-def test_strategy3_makes_speech_blocks() -> None:
-    am = _two_dense_blocks(offset=0.0, k=1.0)
-    clips, ops = get_strategy(3).plan_clip(am, REC, 50.0, 20.0, 200.0, CONFIG)
-
-    assert len(clips) == len(ops) == 2  # exactly two phrases
-    for op in ops:
-        assert op["type"] == "extract"  # pitch-safe: no tempo change
-
-
-def test_strategy4_hybrid_stretches_blocks() -> None:
+def test_strategy3_hybrid_stretches_blocks() -> None:
+    # Strategy 3 = the merged Hybrid strategy (formerly id 4; the old id-3
+    # "Silence Padding" was removed for being byte-identical to Hybrid in the
+    # real render path — see PROJECT_ANALYSIS.md §2.1).
     k = 1.002
     am = _two_dense_blocks(offset=0.0, k=k)
-    clips, ops = get_strategy(4).plan_clip(am, REC, 0.0, 20.0, 200.0, CONFIG)
+    clips, ops = get_strategy(3).plan_clip(am, REC, 0.0, 20.0, 200.0, CONFIG)
 
     assert len(clips) == len(ops) == 2
     for op in ops:
@@ -76,7 +70,7 @@ def test_all_strategies_place_audio_at_matched_timecode() -> None:
     clip_offset = 250.0
     am = _two_dense_blocks(offset=-3.0 * k, k=k)
 
-    for sid in (1, 2, 3, 4):
+    for sid in (1, 2, 3):
         clips, ops = get_strategy(sid).plan_clip(am, REC, clip_offset, 27.0, 300.0, CONFIG)
         assert len(clips) == len(ops) >= 1
         for clip, op in zip(clips, ops, strict=True):
@@ -88,7 +82,7 @@ def test_all_strategies_place_audio_at_matched_timecode() -> None:
 
 def test_strategy_falls_back_when_no_anchors() -> None:
     am = AlignmentMap(anchors=[], offset=-2.0, k=1.0, residual_ms=0.0)
-    for sid in (2, 3, 4):
+    for sid in (2, 3):
         clips, ops = get_strategy(sid).plan_clip(am, REC, 0.0, 10.0, 100.0, CONFIG)
         # falls back to global-linear: a single tempo segment
         assert len(clips) == 1 and ops[0]["type"] == "atempo_segment"

@@ -108,24 +108,22 @@ class HelpPage(QWidget):
         sim_lay.addWidget(self.simulator)
         self._lay.addWidget(sim_frame)
 
-        self._heading("The four strategies")
+        self._heading("The three strategies")
         self._para(
             "<ul>"
             "<li><b>1 · Global linear</b> — one atempo for the whole clip. No seams; best "
             "when the drift is steady (linear).</li>"
             "<li><b>2 · Local time-stretch</b> — each phrase stretched to fit. Highest "
             "alignment, but the speech itself is stretched (audible on large drift).</li>"
-            "<li><b>3 · Silence padding</b> — speech is never touched (zero distortion); "
-            "silence is padded or trimmed instead. Residual drift remains inside long "
-            "phrases.</li>"
-            "<li><b>4 · Hybrid</b> — a gentle per-phrase stretch plus padded gaps. "
+            "<li><b>3 · Hybrid</b> — a gentle per-phrase stretch plus padded gaps. "
             "Near-perfect alignment at roughly half the distortion — <b>the default</b>, "
             "selected for you.</li>"
             "</ul>"
-            "In short: stretching buys alignment by touching the speech; padding protects "
-            "the speech but leaves residual drift; hybrid balances both. The "
-            "<b>distortion index</b> and <b>accuracy</b> readouts above make the trade-off "
-            "concrete."
+            "In short: stretching buys alignment by touching the speech; hybrid corrects "
+            "each phrase gently and lets the gaps between phrases absorb the rest, so it "
+            "stays close to full alignment at about half the distortion of pure "
+            "stretching. The <b>distortion index</b> and <b>accuracy</b> readouts above "
+            "make the trade-off concrete."
         )
 
         self._heading("Polishing the sync (Options)")

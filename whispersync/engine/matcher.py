@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import logging
 import random
-import string
+import re
 from collections import Counter, defaultdict
 
 import numpy as np
@@ -15,9 +15,16 @@ from whispersync.models import AlignmentMap, Anchor, Transcript, Word
 
 logger = logging.getLogger(__name__)
 
+# Strip anything that isn't a Unicode word character. string.punctuation (the
+# old approach) only covers ASCII punctuation, so Russian/typographic marks
+# like «», —, … pass through untouched and words end up with stray leading/
+# trailing punctuation that never matches its "clean" counterpart on the other
+# track — a silent source of lost anchors on non-English (esp. Russian) audio.
+_NON_WORD_RE = re.compile(r"[^\w]", re.UNICODE)
+
 
 def normalize_token(text: str) -> str:
-    return text.lower().translate(str.maketrans("", "", string.punctuation)).strip()
+    return _NON_WORD_RE.sub("", text.lower())
 
 
 def normalize_words(words: list[Word], min_confidence: float) -> list[Word]:
@@ -155,20 +162,52 @@ def reject_gross_outliers(
     Unlike a global-linear inlier test, this keeps anchors that follow a *smooth*
     (possibly non-linear) drift, because each is only compared to its neighbours.
     ``anchors`` must be sorted by rec_time (as produced by ``_anchors_from_words``).
+
+    The window shrinks (down to a minimum of 2) for short anchor lists instead of
+    disabling the filter outright — a clip with, say, 12 anchors used to skip this
+    check entirely (it needed >= 2*window=20), so a single 5-second-off outlier
+    would ride straight through to the piecewise warp. See PROJECT_ANALYSIS.md §2.6.
     """
-    if len(anchors) < 2 * window:
-        return anchors
-    deltas = [a.cam_time - a.rec_time for a in anchors]
     n = len(anchors)
+    if n < 4:
+        return anchors
+    eff_window = min(window, max(2, n // 4))
+    deltas = [a.cam_time - a.rec_time for a in anchors]
     kept: list[Anchor] = []
     for i, a in enumerate(anchors):
-        lo = max(0, i - window)
-        hi = min(n, i + window + 1)
+        lo = max(0, i - eff_window)
+        hi = min(n, i + eff_window + 1)
         local = sorted(deltas[lo:hi])
         median = local[len(local) // 2]
         if abs(deltas[i] - median) <= tol_s:
             kept.append(a)
     return kept
+
+
+def reject_residual_outliers(
+    anchors: list[Anchor],
+    offset: float,
+    k: float,
+    min_factor: float = 3.0,
+    min_residual_s: float = 0.25,
+) -> list[Anchor]:
+    """Drop anchors whose residual against the fitted line (offset, k) is both
+    far from the pack (> ``min_factor`` times the median residual) AND
+    absolutely large (> ``min_residual_s``), so a lone isolated mismatch that
+    slipped past ``reject_gross_outliers`` (e.g. because its local neighbourhood
+    happened to also be sparse/noisy) doesn't feed the piecewise warp — a single
+    such anchor can force a 0.5-5s stretch on its piece. Requires both
+    conditions so a genuinely noisy-but-honest alignment (all residuals modestly
+    elevated) isn't gutted. See PROJECT_ANALYSIS.md §2.6.
+    """
+    if len(anchors) < 4:
+        return anchors
+    residuals = [abs((offset + k * a.rec_time) - a.cam_time) for a in anchors]
+    sorted_res = sorted(residuals)
+    median = sorted_res[len(sorted_res) // 2]
+    threshold = max(min_factor * median, min_residual_s)
+    kept = [a for a, r in zip(anchors, residuals, strict=True) if r <= threshold]
+    return kept if len(kept) >= 2 else anchors
 
 
 def ransac_linear_fit(
@@ -303,6 +342,13 @@ def align(
     # A robust global line (offset, K) still drives timeline placement and the
     # Global-Linear strategy; it is fit on the cleaned anchors.
     offset, k, line_inliers = ransac_linear_fit(kept)
+
+    # A second pass against the fitted line catches an ISOLATED outlier that
+    # reject_gross_outliers missed (its own local neighbourhood was sparse/noisy
+    # enough to not flag it). Applied to `kept` (not just the RANSAC inlier set)
+    # so the piecewise warp — which uses every kept anchor, not only inliers —
+    # never sees a single-anchor 0.5-5s mismatch. See PROJECT_ANALYSIS.md §2.6.
+    kept = reject_residual_outliers(kept, offset, k)
 
     residuals_ms = [abs((offset + k * a.rec_time) - a.cam_time) * 1000 for a in line_inliers]
     residual_ms = float(np.median(residuals_ms)) if residuals_ms else 0.0

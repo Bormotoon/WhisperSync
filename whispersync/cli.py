@@ -132,8 +132,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[1, 2, 3, 4],
         default=1,
         type=int,
-        help="Sync strategy: 1=global linear, 2=local stretch, 3=silence padding, "
-        "4=hybrid (default: 1)",
+        help="Sync strategy: 1=global linear, 2=local stretch, 3=hybrid "
+        "(recommended; default: 1). 4 is accepted as a deprecated alias for 3 "
+        "(the old id-3 'Silence Padding' was merged into Hybrid).",
     )
     parser.add_argument(
         "--timebase-source",
@@ -299,6 +300,16 @@ def main() -> None:
         if not af.is_file():
             _print(f"Error: {af} is not a file")
             sys.exit(1)
+
+    if args.strategy == 4:
+        # Old strategy 3 ("Silence Padding") was merged into Hybrid (now id 3) —
+        # they had become byte-identical in the real render path. 4 is kept as a
+        # deprecated alias so existing scripts/configs don't break outright.
+        _print(
+            "Warning: --strategy 4 is deprecated; strategies 3 and 4 were merged "
+            "into a single Hybrid strategy (id 3). Using strategy 3."
+        )
+        args.strategy = 3
 
     overrides: dict[str, object] = {}
     if args.model:
