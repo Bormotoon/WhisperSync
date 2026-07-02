@@ -16,35 +16,23 @@ than injecting GCC measurement noise.
 from __future__ import annotations
 
 import logging
-import multiprocessing as mp
-import tempfile
 import wave
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
 from whispersync.config import WhisperSyncConfig
-from whispersync.engine.media import extract_audio_window
+from whispersync.engine.media import extract_audio_to_wav
 
 logger = logging.getLogger(__name__)
 
-_REFINE_SR = 16000  # all acoustic windows are cut to mono 16 kHz
-
-
-def _pool_context() -> Any:
-    """'fork' context for the boundary-measurement pool (fast, no __main__ re-import);
-    falls back to the default context where fork is unavailable."""
-    try:
-        return mp.get_context("fork")
-    except (ValueError, RuntimeError):  # pragma: no cover - platform dependent
-        return mp.get_context()
+_REFINE_SR = 16000  # all acoustic analysis happens on mono 16 kHz
 
 
 def read_wav_mono16k(path: Path) -> tuple[np.ndarray, int]:
-    """Read a small PCM WAV (as produced by ``extract_audio_window``) into a float
-    array in [-1, 1]. Uses the stdlib ``wave`` module — no scipy/soundfile dep."""
+    """Read a PCM WAV into a float array in [-1, 1]. Uses the stdlib ``wave``
+    module — no scipy/soundfile dep."""
     with wave.open(str(path), "rb") as w:
         sr = w.getframerate()
         n = w.getnframes()
@@ -54,10 +42,45 @@ def read_wav_mono16k(path: Path) -> tuple[np.ndarray, int]:
     if sampwidth != 2:
         raise ValueError(f"expected pcm_s16le (2-byte) wav, got sampwidth={sampwidth}")
     data = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
-    # If a window slipped through as stereo, fold to mono.
+    # If the file is stereo, fold to mono.
     if nchannels == 2 and data.size:
         data = data.reshape(-1, 2).mean(axis=1)
     return data / 32768.0, sr
+
+
+def load_mono16k_track(path: Path) -> np.ndarray:
+    """Decode an entire audio file (any format/channel layout ffmpeg reads) to a
+    mono 16 kHz float array, once. Boundary Flex used to re-run ffmpeg (via
+    ``extract_audio_window``) for every single boundary it measured — for a
+    clip with hundreds of pieces that's hundreds of short-lived ffmpeg
+    processes just to cut small windows. Decoding each full track exactly once
+    and slicing the resulting numpy array for every window instead removes
+    that spawn overhead entirely (the FFT-based ``gcc_phat`` cost dominates
+    once ffmpeg is out of the loop). See PROJECT_ANALYSIS.md §6.2.
+    """
+    import tempfile
+
+    fd, tmp_name = tempfile.mkstemp(suffix=".wav")
+    import os
+
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        extract_audio_to_wav(path, tmp_path, sample_rate=_REFINE_SR, mono=True)
+        sig, _ = read_wav_mono16k(tmp_path)
+        return sig
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _window_slice(track: np.ndarray, center_s: float, win_s: float, sr: int) -> np.ndarray:
+    """A ``win_s``-second slice of ``track`` centered on ``center_s``, clamped to
+    the track's bounds (shorter at the edges rather than raising)."""
+    half = int(round(win_s / 2.0 * sr))
+    c = int(round(center_s * sr))
+    lo = max(0, c - half)
+    hi = min(len(track), c + half)
+    return track[lo:hi]
 
 
 def gcc_phat(
@@ -118,45 +141,31 @@ Piece = tuple[float, float, float]
 
 
 def _measure_boundary(
-    idx: int,
+    cam_track: np.ndarray,
+    rec_track: np.ndarray,
     cam_mid: float,
     rec_mid: float,
-    cam_audio_wav: Path,
-    rec_audio_path: Path,
-    tmp_dir: Path,
     win: float,
     max_lag_s: float,
     eps: float,
     min_sharpness: float,
     deadband_s: float,
     max_shift_s: float,
-) -> tuple[int, float]:
-    """Measure one boundary's acoustic correction (seconds to add to rec_start).
-
-    Module-level and self-contained (writes only its own indexed scratch files) so it
-    runs in a process pool. Returns ``(idx, correction)``; correction is 0.0 when the
-    peak is not confident or the residual is within the deadband.
+) -> float:
+    """Measure one boundary's acoustic correction (seconds to add to rec_start),
+    by slicing the two pre-decoded tracks in memory — no ffmpeg call, no scratch
+    files. Returns 0.0 when the peak is not confident or the residual is within
+    the deadband.
     """
-    cam_win = tmp_dir / f"flex_cam_{idx:05d}.wav"
-    rec_win = tmp_dir / f"flex_rec_{idx:05d}.wav"
-    try:
-        extract_audio_window(cam_audio_wav, cam_win, cam_mid - win / 2.0, win, _REFINE_SR)
-        extract_audio_window(rec_audio_path, rec_win, rec_mid - win / 2.0, win, _REFINE_SR)
-        cam_sig, _ = read_wav_mono16k(cam_win)
-        rec_sig, _ = read_wav_mono16k(rec_win)
-        lag_s, sharp = gcc_phat(cam_sig, rec_sig, _REFINE_SR, max_lag_s, eps)
-        # gcc_phat's lag is the shift to add to the query's (recorder's) time to
-        # align it with the reference (camera); -lag_s is therefore the seconds
-        # to add to the recorder read time so the cut lands under the picture.
-        if sharp >= min_sharpness and abs(lag_s) > deadband_s:
-            return idx, max(-max_shift_s, min(max_shift_s, -lag_s))
-        return idx, 0.0
-    except (RuntimeError, ValueError) as e:
-        logger.debug("flex boundary %d failed: %s", idx, e)
-        return idx, 0.0
-    finally:
-        cam_win.unlink(missing_ok=True)
-        rec_win.unlink(missing_ok=True)
+    cam_sig = _window_slice(cam_track, cam_mid, win, _REFINE_SR)
+    rec_sig = _window_slice(rec_track, rec_mid, win, _REFINE_SR)
+    lag_s, sharp = gcc_phat(cam_sig, rec_sig, _REFINE_SR, max_lag_s, eps)
+    # gcc_phat's lag is the shift to add to the query's (recorder's) time to
+    # align it with the reference (camera); -lag_s is therefore the seconds
+    # to add to the recorder read time so the cut lands under the picture.
+    if sharp >= min_sharpness and abs(lag_s) > deadband_s:
+        return max(-max_shift_s, min(max_shift_s, -lag_s))
+    return 0.0
 
 
 def refine_piece_boundaries(
@@ -181,20 +190,21 @@ def refine_piece_boundaries(
     The piece's duration/factor are left unchanged, so the exact-length contract and
     the overall warp are preserved — only WHERE in the recorder we cut from moves.
 
-    The independent per-boundary measurements are spread across ``workers`` processes;
-    the geometry (which window each boundary probes) is deterministic, so the result is
-    identical regardless of worker count.
+    Both tracks are decoded to mono 16 kHz numpy arrays exactly once (regardless
+    of piece count), and every boundary window is a slice of those arrays — no
+    per-boundary ffmpeg subprocess. The independent measurements are spread
+    across a thread pool (``gcc_phat``'s FFT calls release the GIL, so threads
+    parallelize this fine and avoid the fork-safety concerns of a process pool);
+    the geometry is deterministic, so the result is identical regardless of
+    worker count. ``tmp_dir`` is accepted for backward compatibility but is
+    unused now that no scratch files are written.
     """
     if not pieces:
         return pieces
 
     win = config.flex_window_s
-    own_tmp = tmp_dir is None
-    if own_tmp:
-        tmp_dir = Path(tempfile.mkdtemp(prefix="whispersync_flex_"))
-    assert tmp_dir is not None
 
-    # First pass (cheap, sequential): the window geometry for every in-bounds boundary.
+    # First pass (cheap): the window geometry for every in-bounds boundary.
     jobs: list[tuple[int, float, float]] = []  # (idx, cam_mid, rec_mid)
     local = lead
     for idx, (rec_start, rec_dur, factor) in enumerate(pieces):
@@ -209,12 +219,15 @@ def refine_piece_boundaries(
             jobs.append((idx, cam_mid, rec_mid))
         local += out_dur
 
-    # Second pass (slow ffmpeg+GCC): measure each boundary, in parallel when asked.
-    corrections: dict[int, float] = {}
+    if not jobs:
+        return pieces
+
+    # Decode both full tracks to mono 16k once; every boundary below just
+    # slices these arrays.
+    cam_track = load_mono16k_track(cam_audio_wav)
+    rec_track = load_mono16k_track(rec_audio_path)
+
     args = (
-        cam_audio_wav,
-        rec_audio_path,
-        tmp_dir,
         win,
         config.acoustic_max_lag_s,
         config.gcc_eps,
@@ -222,25 +235,18 @@ def refine_piece_boundaries(
         config.flex_deadband_s,
         config.flex_max_shift_s,
     )
-    try:
-        if workers <= 1 or len(jobs) <= 1:
-            for idx, cam_mid, rec_mid in jobs:
-                i, corr = _measure_boundary(idx, cam_mid, rec_mid, *args)
-                corrections[i] = corr
-        else:
-            with ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context()) as pool:
-                futs = [
-                    pool.submit(_measure_boundary, idx, cam_mid, rec_mid, *args)
-                    for idx, cam_mid, rec_mid in jobs
-                ]
-                for fut in futs:
-                    i, corr = fut.result()
-                    corrections[i] = corr
-    finally:
-        if own_tmp:
-            import shutil
-
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+    corrections: dict[int, float] = {}
+    if workers <= 1 or len(jobs) <= 1:
+        for idx, cam_mid, rec_mid in jobs:
+            corrections[idx] = _measure_boundary(cam_track, rec_track, cam_mid, rec_mid, *args)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(_measure_boundary, cam_track, rec_track, cam_mid, rec_mid, *args): idx
+                for idx, cam_mid, rec_mid in jobs
+            }
+            for fut, idx in futs.items():
+                corrections[idx] = fut.result()
 
     # Apply corrections, clamping each shifted start within the recorder bounds.
     refined: list[Piece] = []

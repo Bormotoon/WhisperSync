@@ -7,6 +7,7 @@ import logging
 import random
 import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -44,8 +45,35 @@ def _mid(w: Word) -> float:
     return (w.start + w.end) / 2
 
 
+@dataclass
+class RecorderIndex:
+    """Rare-word position index for one recorder's normalized words, used by
+    ``estimate_coarse_delta``. Building it (a ``Counter`` + position lists over
+    every recorder word) is the same work regardless of which camera clip is
+    being coarse-located, but the whole recorder is re-indexed from scratch for
+    every clip aligned against it — expensive for a multi-hour recorder aligned
+    against dozens of clips. Build once per recorder with ``build_recorder_index``
+    and pass it into ``align``/``estimate_coarse_delta`` to reuse it.
+    See PROJECT_ANALYSIS.md §6.5.
+    """
+
+    rec_positions: dict[str, list[float]]
+
+
+def build_recorder_index(rec_words: list[Word], config: WhisperSyncConfig) -> RecorderIndex:
+    rec_count = Counter(w.norm for w in rec_words)
+    rec_positions: dict[str, list[float]] = defaultdict(list)
+    for w in rec_words:
+        if rec_count[w.norm] <= config.seed_max_occurrences:
+            rec_positions[w.norm].append(_mid(w))
+    return RecorderIndex(rec_positions=dict(rec_positions))
+
+
 def estimate_coarse_delta(
-    cam_words: list[Word], rec_words: list[Word], config: WhisperSyncConfig
+    cam_words: list[Word],
+    rec_words: list[Word],
+    config: WhisperSyncConfig,
+    rec_index: RecorderIndex | None = None,
 ) -> float | None:
     """Roughly locate the clip inside a (possibly very long) reference by voting
     on the time delta ``rec_time - cam_time`` of shared rare words. Returns the
@@ -54,12 +82,15 @@ def estimate_coarse_delta(
 
     Assumes K ≈ 1 for the coarse pass, which is accurate enough over a single
     clip to pick the right window; the fine pass recovers the exact K.
+
+    Pass a pre-built ``rec_index`` (``build_recorder_index``) to skip
+    re-indexing the same recorder for every clip aligned against it.
     """
-    rec_count = Counter(w.norm for w in rec_words)
-    rec_positions: dict[str, list[float]] = defaultdict(list)
-    for w in rec_words:
-        if rec_count[w.norm] <= config.seed_max_occurrences:
-            rec_positions[w.norm].append(_mid(w))
+    rec_positions = (
+        rec_index.rec_positions
+        if rec_index is not None
+        else build_recorder_index(rec_words, config).rec_positions
+    )
 
     bin_width = config.seed_bin_width
     votes: Counter[int] = Counter()
@@ -249,7 +280,10 @@ def ransac_linear_fit(
 
 
 def _window_recorder(
-    cam_words: list[Word], rec_words: list[Word], config: WhisperSyncConfig
+    cam_words: list[Word],
+    rec_words: list[Word],
+    config: WhisperSyncConfig,
+    rec_index: RecorderIndex | None = None,
 ) -> list[Word]:
     """If the recorder is much longer than the clip, restrict matching to a
     window around the coarse estimate; otherwise return all recorder words."""
@@ -262,7 +296,7 @@ def _window_recorder(
     if rec_span <= (cam_hi - cam_lo) + 4 * margin:
         return rec_words
 
-    delta = estimate_coarse_delta(cam_words, rec_words, config)
+    delta = estimate_coarse_delta(cam_words, rec_words, config, rec_index)
     if delta is None:
         return rec_words
 
@@ -299,13 +333,21 @@ def align(
     cam_transcript: Transcript,
     rec_transcript: Transcript,
     config: WhisperSyncConfig,
+    rec_index: RecorderIndex | None = None,
 ) -> AlignmentMap:
+    """Align a camera clip's transcript to a recorder's.
+
+    ``rec_index`` (``build_recorder_index``) lets a caller aligning many clips
+    against the SAME recorder build its rare-word position index once instead
+    of on every call — the index only depends on ``rec_transcript`` and
+    ``config``, not on the clip. Optional; built on the fly if omitted.
+    """
     cam_words = normalize_words(list(cam_transcript.words), config.anchor_min_confidence)
     rec_words = normalize_words(list(rec_transcript.words), config.anchor_min_confidence)
     if not cam_words or not rec_words:
         raise ValueError("No usable words to align (check confidence threshold / speech content).")
 
-    rec_used = _window_recorder(cam_words, rec_words, config)
+    rec_used = _window_recorder(cam_words, rec_words, config, rec_index)
     anchors = _match_words(cam_words, rec_used)
 
     # If the coarse window was misleading, retry once against the full reference.

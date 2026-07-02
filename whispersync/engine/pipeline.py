@@ -21,7 +21,7 @@ from typing import Any
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.acoustic import refine_piece_boundaries
 from whispersync.engine.export import generate_fcpxml, validate_fcpxml
-from whispersync.engine.matcher import align
+from whispersync.engine.matcher import align, build_recorder_index, normalize_words
 from whispersync.engine.media import (
     MediaInfo,
     extract_audio_master,
@@ -170,7 +170,7 @@ def scan_cameras(video_dir: Path, config: WhisperSyncConfig) -> tuple[list[Camer
         clips: list[MediaClip] = []
         lane = cam_index + 1
         for path in paths:
-            info = probe(path)
+            info = probe(path, timeout=config.probe_timeout_s)
             infos.append(info)
             clips.append(
                 MediaClip(
@@ -717,7 +717,7 @@ def run_pipeline(
                 mode=config.transcribe_mode,
             )
 
-        rec_infos = [probe(p) for p in audio_files]
+        rec_infos = [probe(p, timeout=config.probe_timeout_s) for p in audio_files]
         rec_transcripts = []
         for ri, rp in enumerate(audio_files):
             _notify("transcribing_recorder", ri / len(audio_files), f"Recorder: {rp.name}")
@@ -729,6 +729,19 @@ def run_pipeline(
         # (clip_pieces nudges piece boundaries away from mid-word cuts).
         rec_word_gaps = [
             recorder_word_gaps([(w.start, w.end) for w in rt.words]) for rt in rec_transcripts
+        ]
+
+        # Coarse-match rare-word index per recorder, built once and reused for
+        # every camera clip aligned against it — estimate_coarse_delta's index
+        # only depends on the recorder's words, not the clip, so re-indexing it
+        # per clip (the previous behaviour) repeated the same Counter/position
+        # pass over a possibly multi-hour recorder for every single clip. See
+        # PROJECT_ANALYSIS.md §6.5.
+        rec_indices = [
+            build_recorder_index(
+                normalize_words(list(rt.words), config.anchor_min_confidence), config
+            )
+            for rt in rec_transcripts
         ]
 
         # --- align each clip against each recorder ---
@@ -768,15 +781,23 @@ def run_pipeline(
             )
             clip_audio = extract_audio_to_wav(clip.path)
             cleanup_paths.append(clip_audio)
-            clip_transcript = engine.transcribe(clip_audio)
+
+            # Per-clip progress, not just a stage message: without this the
+            # progress bar sits frozen at the same percentage for the whole
+            # duration of a long camera clip's transcription. See
+            # PROJECT_ANALYSIS.md §6.6.
+            def _clip_progress(p: float, idx: int = idx, name: str = clip.path.name) -> None:
+                _notify("transcribing_camera", (idx + p) / max(n, 1), name)
+
+            clip_transcript = engine.transcribe(clip_audio, _clip_progress)
             clip_transcripts.append(clip_transcript)
             cam_name = cameras[clip_camera[idx]].name
             clip_stem = clip.path.stem if len(cameras) == 1 else f"{cam_name}_{clip.path.stem}"
             _save_tx(clip_transcript, clip_stem, clip.path)
             row: list[AlignmentMap | None] = []
-            for rt in rec_transcripts:
+            for ri, rt in enumerate(rec_transcripts):
                 try:
-                    row.append(align(clip_transcript, rt, config))
+                    row.append(align(clip_transcript, rt, config, rec_indices[ri]))
                 except ValueError:
                     row.append(None)
             video_status[idx] = "pending"
@@ -1118,26 +1139,42 @@ def run_pipeline(
                 ambience_dir = output_path.parent / "ambience"
                 model_dir = repo_root / "models" / "separator"
                 ambient_lane = min((c.lane for c in audio_clips), default=-1) - 1
-                amb_clips: list[MediaClip] = []
                 src_clips = [video_clips[ci] for ci in range(n) if clip_camera[ci] == audio_ci]
+
+                # Extract every clip's camera audio first, then run the
+                # separator ONCE over the whole batch — audio-separator loads
+                # its (1.5+ GB) model once per invocation, so calling it once
+                # per clip (the previous behaviour) reloaded the model from
+                # scratch for every camera clip in a multi-clip shoot. See
+                # PROJECT_ANALYSIS.md §6.3.
+                cam_wavs: list[Path] = []
                 for k, vclip in enumerate(src_clips):
                     _notify(
                         "processing",
                         k / max(len(src_clips), 1),
-                        f"Extracting ambience {k + 1}/{len(src_clips)}: {vclip.path.name}",
+                        f"Extracting camera audio {k + 1}/{len(src_clips)}: {vclip.path.name}",
                     )
                     cam_wav = extract_audio_to_wav(vclip.path, sample_rate=out_sr, mono=False)
                     cleanup_paths.append(cam_wav)
-                    try:
-                        amb = separation.extract_ambience(
-                            cam_wav,
-                            ambience_dir,
-                            repo_root,
-                            config.ambience_model,
-                            model_dir=model_dir if model_dir.exists() else None,
-                        )
-                    except (RuntimeError, OSError) as e:
-                        warnings.append(f"{vclip.path.name}: ambience extraction failed ({e})")
+                    cam_wavs.append(cam_wav)
+
+                _notify("processing", 0.0, f"Separating ambience for {len(cam_wavs)} clip(s)...")
+                amb_clips: list[MediaClip] = []
+                try:
+                    amb_by_input = separation.extract_ambience_batch(
+                        cam_wavs,
+                        ambience_dir,
+                        repo_root,
+                        config.ambience_model,
+                        model_dir=model_dir if model_dir.exists() else None,
+                    )
+                except (RuntimeError, OSError) as e:
+                    warnings.append(f"Ambience batch separation failed ({e}) — skipped.")
+                    amb_by_input = {}
+
+                for vclip, cam_wav in zip(src_clips, cam_wavs, strict=True):
+                    amb = amb_by_input.get(cam_wav)
+                    if amb is None:
                         continue
                     # Rename the separator's "…_(Instrumental)_<model>.wav" to a clean
                     # clip-matched name ("DJI_0832_ambience.wav").

@@ -155,6 +155,10 @@ class WhisperSyncConfig:
     # each piece / Flex window is an independent ffmpeg call, spread across a process
     # pool. 0 = auto (os.cpu_count()); 1 = sequential. Output is identical regardless.
     render_workers: int = 0
+    # ffprobe timeout (seconds) when reading each media file's metadata. The
+    # default is generous for local files; raise it for clips on slow
+    # network/NAS storage that can legitimately take longer to respond.
+    probe_timeout_s: float = 30.0
     min_anchors: int = MIN_ANCHORS
     anchor_min_confidence: float = ANCHOR_MIN_CONFIDENCE
     phrase_gap_threshold: float = PHRASE_GAP_THRESHOLD

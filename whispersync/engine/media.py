@@ -30,7 +30,12 @@ class MediaInfo:
     audio_bits_per_sample: int | None = None
 
 
-def probe(path: Path) -> MediaInfo:
+def probe(path: Path, timeout: float = 30.0) -> MediaInfo:
+    """Read duration/fps/codecs/etc via ffprobe. ``timeout`` (seconds) is
+    configurable — the default is generous for local files, but a clip on
+    network/NAS storage can legitimately take longer to respond. See
+    PROJECT_ANALYSIS.md §6.6.
+    """
     cmd = [
         "ffprobe",
         "-v",
@@ -41,7 +46,7 @@ def probe(path: Path) -> MediaInfo:
         "-show_streams",
         str(path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed for {path}: {result.stderr}")
 
@@ -201,47 +206,6 @@ def extract_audio_master(
             # which varies across ffmpeg versions.
             continue
     raise RuntimeError(f"ffmpeg master extraction failed: {last_stderr}")
-
-
-def extract_audio_window(
-    input_path: Path,
-    output_path: Path,
-    start: float,
-    duration: float,
-    sample_rate: int = 16000,
-    mono: bool = True,
-) -> Path:
-    """Cut a short audio window ``[start, start+duration]`` to WAV.
-
-    Like ``extract_audio_to_wav`` but seeks to an arbitrary timestamp — ``-ss``
-    and ``-t`` go BEFORE ``-i`` for fast, sample-accurate seeking on PCM/WAV (the
-    same convention as ``timestretch.extract_segment``). Used by the acoustic
-    refine pass to pull matching camera/recorder windows for cross-correlation.
-    """
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-ss",
-        f"{max(0.0, start):.6f}",
-        "-t",
-        f"{duration:.6f}",
-        "-i",
-        str(input_path),
-        "-vn",
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        str(sample_rate),
-    ]
-    if mono:
-        cmd.extend(["-ac", "1"])
-    cmd.append(str(output_path))
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg window extraction failed: {result.stderr}")
-
-    return output_path
 
 
 def pcm_codec_for_bit_depth(bits_per_sample: int | None) -> str:

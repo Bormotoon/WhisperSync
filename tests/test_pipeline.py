@@ -135,7 +135,7 @@ def test_unaligned_clip_falls_back_to_previous_end() -> None:
     assert unaligned == [1]
 
 
-def _fake_probe(path: Path):  # noqa: ANN202
+def _fake_probe(path: Path, timeout: float = 30.0):  # noqa: ANN202
     from fractions import Fraction
 
     from whispersync.engine.media import MediaInfo

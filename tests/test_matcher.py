@@ -7,6 +7,7 @@ from pathlib import Path
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.matcher import (
     align,
+    build_recorder_index,
     estimate_coarse_delta,
     find_anchors,
     normalize_token,
@@ -262,3 +263,23 @@ def test_align_windowed_on_long_recorder() -> None:
     # the clip's local 0 must map back to recorder t≈2400: t_cam = offset + k*t_rec
     assert abs(result.offset + result.k * clip_offset) < 0.5
     assert len(result.anchors) >= 10
+
+
+def test_align_with_prebuilt_recorder_index_matches_on_the_fly() -> None:
+    # A pre-built RecorderIndex (reused across clips aligned against the same
+    # recorder — PROJECT_ANALYSIS.md §6.5) must give the identical result to
+    # letting align() build its own index internally.
+    clip_tokens = [f"anchorword{i:03d}" for i in range(20)]
+    clip_offset, true_k = 2400.0, 1.0008
+    cam_t, rec_t = _long_recorder_with_clip(
+        clip_tokens, clip_offset_in_rec=clip_offset, total_rec_minutes=80.0, true_k=true_k
+    )
+    cfg = WhisperSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
+    baseline = align(cam_t, rec_t, cfg)
+
+    rec_index = build_recorder_index(normalize_words(list(rec_t.words), 0.5), cfg)
+    with_index = align(cam_t, rec_t, cfg, rec_index)
+
+    assert with_index.offset == baseline.offset
+    assert with_index.k == baseline.k
+    assert len(with_index.anchors) == len(baseline.anchors)

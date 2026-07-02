@@ -33,3 +33,18 @@ def test_extract_requires_venv(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="sep-venv"):
         separation.extract_ambience(tmp_path / "cam.wav", tmp_path / "out", tmp_path, "model.ckpt")
+
+
+def test_extract_batch_requires_venv(tmp_path: Path) -> None:
+    import pytest
+
+    with pytest.raises(RuntimeError, match="sep-venv"):
+        separation.extract_ambience_batch(
+            [tmp_path / "a.wav", tmp_path / "b.wav"], tmp_path / "out", tmp_path, "model.ckpt"
+        )
+
+
+def test_extract_batch_empty_input_is_noop(tmp_path: Path) -> None:
+    # No .sep-venv either, but an empty batch must short-circuit before
+    # checking for it — nothing to separate, nothing to fail on.
+    assert separation.extract_ambience_batch([], tmp_path / "out", tmp_path, "model.ckpt") == {}

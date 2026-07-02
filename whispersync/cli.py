@@ -229,6 +229,7 @@ def _run_dry_run(
     from contextlib import suppress
 
     from whispersync.engine.matcher import align as match_align
+    from whispersync.engine.matcher import build_recorder_index, normalize_words
     from whispersync.engine.media import extract_audio_to_wav
     from whispersync.engine.pipeline import scan_video_clips
     from whispersync.engine.transcriber import WhisperEngine
@@ -253,6 +254,14 @@ def _run_dry_run(
             rec_transcripts.append(
                 engine.transcribe(rp, lambda p: _notify("transcribing_recorder", p))
             )
+        # Built once per recorder and reused for every clip aligned against it —
+        # see PROJECT_ANALYSIS.md §6.5.
+        rec_indices = [
+            build_recorder_index(
+                normalize_words(list(rt.words), config.anchor_min_confidence), config
+            )
+            for rt in rec_transcripts
+        ]
 
         # Align each clip against each recorder and return the richest alignment.
         best: Any = None
@@ -262,9 +271,9 @@ def _run_dry_run(
             clip_audio = extract_audio_to_wav(clip.path)
             cleanup_paths.append(clip_audio)
             clip_transcript = engine.transcribe(clip_audio)
-            for rec_transcript in rec_transcripts:
+            for ri, rec_transcript in enumerate(rec_transcripts):
                 try:
-                    am = match_align(clip_transcript, rec_transcript, config)
+                    am = match_align(clip_transcript, rec_transcript, config, rec_indices[ri])
                 except ValueError:
                     continue
                 if best is None or len(am.anchors) > len(best.anchors):

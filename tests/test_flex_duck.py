@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine import acoustic
 from whispersync.engine.pipeline import pause_spans_local
@@ -119,9 +121,10 @@ def test_refine_shifts_only_confident_beyond_deadband(monkeypatch) -> None:
     # three contiguous pieces, factor 1.0, 5s each
     pieces = [(100.0, 5.0, 1.0), (105.0, 5.0, 1.0), (110.0, 5.0, 1.0)]
 
-    # stub out window extraction and wav reading so no ffmpeg/files are needed
-    monkeypatch.setattr(acoustic, "extract_audio_window", lambda *a, **k: Path("x"))
-    monkeypatch.setattr(acoustic, "read_wav_mono16k", lambda p: (None, 16000))
+    # stub out track decoding (in-memory Boundary Flex loads each full track
+    # once — see acoustic.load_mono16k_track) so no ffmpeg/files are needed
+    fake_track = np.zeros(700 * 16000)
+    monkeypatch.setattr(acoustic, "load_mono16k_track", lambda p: fake_track)
 
     # piece 0: confident, big lag → shift; piece 1: confident but tiny lag → deadband, no shift;
     # piece 2: low sharpness → no shift.
@@ -142,7 +145,6 @@ def test_refine_shifts_only_confident_beyond_deadband(monkeypatch) -> None:
         clip_duration=15.0,
         rec_duration=600.0,
         config=cfg,
-        tmp_dir=Path("/tmp"),
     )
     # piece 0 start moved by +0.08 (=-lag); 1 and 2 unchanged
     assert abs(refined[0][0] - 100.08) < 1e-6
@@ -155,11 +157,9 @@ def test_refine_shifts_only_confident_beyond_deadband(monkeypatch) -> None:
 def test_refine_clamps_to_max_shift(monkeypatch) -> None:
     cfg = WhisperSyncConfig(boundary_flex=True, flex_max_shift_s=0.15, flex_min_sharpness=80.0)
     pieces = [(100.0, 5.0, 1.0)]
-    monkeypatch.setattr(acoustic, "extract_audio_window", lambda *a, **k: Path("x"))
-    monkeypatch.setattr(acoustic, "read_wav_mono16k", lambda p: (None, 16000))
+    fake_track = np.zeros(700 * 16000)
+    monkeypatch.setattr(acoustic, "load_mono16k_track", lambda p: fake_track)
     monkeypatch.setattr(acoustic, "gcc_phat", lambda *a, **k: (-1.0, 300.0))  # huge lag
-    refined = acoustic.refine_piece_boundaries(
-        pieces, 0.0, Path("c"), Path("r"), 15.0, 600.0, cfg, tmp_dir=Path("/tmp")
-    )
+    refined = acoustic.refine_piece_boundaries(pieces, 0.0, Path("c"), Path("r"), 15.0, 600.0, cfg)
     # clamped to +0.15, not +1.0
     assert abs(refined[0][0] - 100.15) < 1e-6
