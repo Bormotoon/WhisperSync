@@ -21,7 +21,12 @@ from typing import Any
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.acoustic import refine_piece_boundaries
 from whispersync.engine.export import generate_fcpxml, validate_fcpxml
-from whispersync.engine.matcher import align, build_recorder_index, normalize_words
+from whispersync.engine.matcher import (
+    align,
+    build_recorder_index,
+    normalize_words,
+    recommend_strategy,
+)
 from whispersync.engine.media import (
     MediaInfo,
     extract_audio_master,
@@ -863,6 +868,23 @@ def run_pipeline(
         if len(cameras) > 1:
             warnings.append(f"Audio synced from camera '{cameras[audio_ci].name}'")
 
+        # Constant per-camera lip-sync calibration (see config.camera_av_offset_ms):
+        # a fixed mic-to-lips delay in the camera's own audio pipeline that no
+        # acoustic method can see (it aligns recorder audio to camera AUDIO, not
+        # to the video frames/lips). Applied uniformly to every synced clip's
+        # timeline offset below.
+        av_offset_s = (
+            config.camera_av_offset_ms_by_camera.get(
+                cameras[audio_ci].name, config.camera_av_offset_ms
+            )
+            / 1000.0
+        )
+        if av_offset_s != 0.0:
+            warnings.append(
+                f"Applying {av_offset_s * 1000:+.1f} ms lip-sync calibration for "
+                f"camera '{cameras[audio_ci].name}'"
+            )
+
         # --- plan + render synced audio (one WAV per audio-source video clip) ---
         # Video files are referenced untouched. For each one we render a single
         # recorder-audio WAV of identical length, with speech placed at its synced
@@ -950,7 +972,7 @@ def run_pipeline(
                 MediaClip(
                     path=audio_files[ri],
                     kind="audio",
-                    offset=vclip.offset,
+                    offset=vclip.offset + av_offset_s,
                     in_point=0.0,
                     duration=vclip.duration,
                     lane=lane,
@@ -1221,6 +1243,17 @@ def run_pipeline(
         best = max(all_aligned, key=lambda a: len(a.anchors))
         if best.residual_ms > 40:
             warnings.append(f"High residual alignment error: {best.residual_ms:.1f} ms")
+
+        # Auto-strategy advice: tell the user if the drift characteristics
+        # suggest a different strategy than the one actually used, so they
+        # can re-run cheaply (transcripts are cached — only the render
+        # repeats). See PROJECT_ANALYSIS.md §10.1.
+        recommended_id, reason = recommend_strategy(best)
+        if recommended_id != strategy_id:
+            warnings.append(
+                f"Strategy {recommended_id} ({strategy_name(recommended_id)}) may suit this "
+                f"recording better than the strategy {strategy_id} used: {reason}"
+            )
 
         # count the best recorder per clip for a representative anchor total
         anchors_used = sum(max((_anchor_count(a) for a in row), default=0) for row in aligns)

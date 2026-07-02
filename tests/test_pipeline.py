@@ -297,3 +297,15 @@ def test_sequence_order_no_warning_when_consistent() -> None:
 
     clips = [_vclip("a1", 0.0, 10.0, 1), _vclip("a2", 12.0, 10.0, 1)]
     assert sequence_order_warnings(clips, [0, 0], [True, True]) == []
+
+
+def test_camera_av_offset_resolution_defaults_and_overrides() -> None:
+    # config.camera_av_offset_ms_by_camera.get(camera_name, default) is the
+    # exact resolution pipeline.run_pipeline uses — locks the per-camera
+    # override / global-default contract without needing a full pipeline run.
+    cfg = WhisperSyncConfig(
+        camera_av_offset_ms=10.0,
+        camera_av_offset_ms_by_camera={"camB": -5.0},
+    )
+    assert cfg.camera_av_offset_ms_by_camera.get("camA", cfg.camera_av_offset_ms) == 10.0
+    assert cfg.camera_av_offset_ms_by_camera.get("camB", cfg.camera_av_offset_ms) == -5.0

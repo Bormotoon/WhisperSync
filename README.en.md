@@ -190,12 +190,15 @@ Key flags: `--strategy {1,2,3}` (default: `WhisperSyncConfig.default_strategy`,
 `3`; `4` is accepted as a deprecated alias for `3`), `--device {auto,cuda,cpu}`,
 `--compute-type {auto,float16,int8,...}`, `--batch-size`, `--mode {fast,quality}`,
 `--timebase-source {camera,recorder}`, `--audio-source-camera`,
+`--camera-av-offset-ms` (constant per-camera lip-sync calibration),
 `--recorder-mode {best,all}`, `--crossfade/--no-crossfade`, `--render-workers`,
 `--boundary-flex/--no-boundary-flex` (on by default), `--pause-duck/
 --no-pause-duck`, `--pause-duck-db`, `--ambience-track`,
 `--save-transcripts/--no-save-transcripts`, `--config`, `--no-cache`,
-`--dry-run`, `--json`, `--verbose`, `--version`. Run `python main.py --cli --help`
-for the full list. CLI flags override the JSON config, which overrides defaults.
+`--dry-run`, `--verify` (post-render lip-sync self-check, see
+`tools/verify_sync.py`), `--json`, `--verbose`, `--version`. Run
+`python main.py --cli --help` for the full list. CLI flags override the JSON
+config, which overrides defaults.
 
 Exit codes: `0` success, `1` run failure (no anchors, ffmpeg error, etc.),
 `2` usage/argument error.

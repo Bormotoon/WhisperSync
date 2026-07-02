@@ -120,6 +120,19 @@ class WhisperSyncConfig:
     # Multicam: name (subfolder) of the camera the synced audio is derived from.
     # None = auto-pick the camera with the strongest alignment.
     audio_source_camera: str | None = None
+    # Constant per-camera lip-sync calibration (milliseconds), added to every
+    # synced audio clip's timeline offset. Acoustic methods (Boundary Flex,
+    # the coarse text match) align recorder audio to CAMERA AUDIO — they
+    # cannot see or correct a fixed mic-to-lips delay baked into a specific
+    # camera's own audio pipeline (e.g. an internal ADC/encoder latency).
+    # That constant is invisible to any audio-only measurement and needs a
+    # one-time calibration (e.g. a clap synced by eye, frame-stepped) to
+    # find. `camera_av_offset_ms` is the default for every camera;
+    # `camera_av_offset_ms_by_camera` overrides it per camera sub-folder
+    # name. Positive = delay the synced audio (recorder audio arrives EARLY
+    # relative to this camera's lips); negative = advance it.
+    camera_av_offset_ms: float = 0.0
+    camera_av_offset_ms_by_camera: dict[str, float] = field(default_factory=dict)
     # Multiple recorders (different devices): "best" = one audio lane, each clip
     # synced from its best-matching recorder; "all" = every recorder on its own
     # audio lane (-1, -2, …) for multi-mic / multi-speaker setups.

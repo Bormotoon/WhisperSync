@@ -174,6 +174,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Multicam: camera sub-folder name to sync audio from (default: auto)",
     )
     parser.add_argument(
+        "--camera-av-offset-ms",
+        type=float,
+        default=None,
+        help="Constant per-camera lip-sync calibration in ms, added to every synced "
+        "clip's timeline offset (default: 0). Corrects a fixed mic-to-lips delay in "
+        "the camera's own audio pipeline that acoustic alignment cannot see.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -408,6 +416,8 @@ def main() -> None:
         overrides["timebase_source"] = args.timebase_source
     if args.audio_source_camera:
         overrides["audio_source_camera"] = args.audio_source_camera
+    if args.camera_av_offset_ms is not None:
+        overrides["camera_av_offset_ms"] = args.camera_av_offset_ms
     if args.recorder_mode:
         overrides["recorder_mode"] = args.recorder_mode
     if args.crossfade is not None:

@@ -82,3 +82,12 @@ def test_timebase_and_camera_flags() -> None:
     )
     assert args.timebase_source == "recorder"
     assert args.audio_source_camera == "camB"
+
+
+def test_camera_av_offset_flag() -> None:
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav"])
+    assert args.camera_av_offset_ms is None
+    args = _build_parser().parse_args(
+        ["--video-dir", "v", "--audio-file", "r.wav", "--camera-av-offset-ms", "-12.5"]
+    )
+    assert args.camera_av_offset_ms == -12.5

@@ -406,3 +406,49 @@ def align(
         k=k,
         residual_ms=residual_ms,
     )
+
+
+# Recommendation thresholds: below this residual, a single global tempo
+# conform already tracks the drift closely enough that per-segment
+# corrections wouldn't measurably improve sync. Above the non-linearity
+# threshold, the drift visibly bends within the clip (not just a constant
+# rate), which a single global K can't capture.
+_AUTO_LINEAR_RESIDUAL_MS = 15.0
+_AUTO_NONLINEARITY_MS = 60.0
+
+
+def recommend_strategy(alignment: AlignmentMap) -> tuple[int, str]:
+    """Recommend a sync strategy id from an already-computed alignment.
+
+    Looks at two signals a caller already paid for by calling ``align()``:
+    the fitted line's residual (how well a single global K already explains
+    the anchors) and the local non-linearity (how much consecutive anchors'
+    pairwise drift disagrees with the global line — a smooth non-linear
+    drift shows up as a large spread here even with a low overall residual).
+    Returns ``(strategy_id, reason)``, where ``reason`` is a short
+    human-readable justification suitable for a warning/log line. See
+    PROJECT_ANALYSIS.md §10.1.
+    """
+    anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
+    if alignment.residual_ms <= _AUTO_LINEAR_RESIDUAL_MS:
+        return 1, f"drift is linear (residual {alignment.residual_ms:.1f} ms)"
+
+    if len(anchors) >= 4:
+        # Local drift rate between consecutive anchor pairs, in the same units
+        # as K (dimensionless ratio) — how much does the clock ratio wobble
+        # across the clip, independent of the single global-line residual.
+        local_ks = [
+            (b.cam_time - a.cam_time) / (b.rec_time - a.rec_time)
+            for a, b in zip(anchors, anchors[1:], strict=False)
+            if b.rec_time > a.rec_time
+        ]
+        if local_ks:
+            spread = (max(local_ks) - min(local_ks)) * 1000.0  # ms/s-ish scale
+            if spread > _AUTO_NONLINEARITY_MS / 1000.0:
+                return (
+                    2,
+                    f"drift is non-linear (local rate spread {spread:.2f}‰, "
+                    f"residual {alignment.residual_ms:.1f} ms)",
+                )
+
+    return 3, f"drift needs per-phrase correction (residual {alignment.residual_ms:.1f} ms)"

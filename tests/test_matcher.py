@@ -12,10 +12,11 @@ from whispersync.engine.matcher import (
     find_anchors,
     normalize_token,
     normalize_words,
+    recommend_strategy,
     reject_gross_outliers,
     reject_residual_outliers,
 )
-from whispersync.models import Anchor, Segment, Transcript, Word
+from whispersync.models import AlignmentMap, Anchor, Segment, Transcript, Word
 
 
 def test_reject_gross_outliers_keeps_smooth_drift() -> None:
@@ -283,3 +284,55 @@ def test_align_with_prebuilt_recorder_index_matches_on_the_fly() -> None:
     assert with_index.offset == baseline.offset
     assert with_index.k == baseline.k
     assert len(with_index.anchors) == len(baseline.anchors)
+
+
+# --- recommend_strategy -------------------------------------------------------
+
+
+def test_recommend_strategy_low_residual_is_global_linear() -> None:
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(10)
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
+    sid, reason = recommend_strategy(am)
+    assert sid == 1
+    assert "linear" in reason
+
+
+def test_recommend_strategy_nonlinear_local_drift_suggests_strategy_2() -> None:
+    # Anchors whose LOCAL pairwise rate wobbles a lot even though a single
+    # global line still fits reasonably (residual just above the linear
+    # threshold) -> the non-linearity signal should win over strategy 3.
+    anchors = [
+        Anchor(cam_time=0.0, rec_time=0.0, token="a", confidence=0.9),
+        Anchor(cam_time=1.0, rec_time=1.0, token="b", confidence=0.9),  # rate 1.0
+        Anchor(cam_time=3.0, rec_time=2.0, token="c", confidence=0.9),  # rate 2.0
+        Anchor(cam_time=3.5, rec_time=3.0, token="d", confidence=0.9),  # rate 0.5
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=20.0)
+    sid, reason = recommend_strategy(am)
+    assert sid == 2
+    assert "non-linear" in reason
+
+
+def test_recommend_strategy_high_residual_smooth_drift_suggests_strategy_3() -> None:
+    # Uniformly elevated residual but no local-rate wobble -> per-phrase
+    # correction (strategy 3), not per-segment (strategy 2).
+    anchors = [
+        Anchor(cam_time=float(t) * 1.05, rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(10)
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.05, residual_ms=25.0)
+    sid, reason = recommend_strategy(am)
+    assert sid == 3
+
+
+def test_recommend_strategy_too_few_anchors_skips_nonlinearity_check() -> None:
+    anchors = [
+        Anchor(cam_time=0.0, rec_time=0.0, token="a", confidence=0.9),
+        Anchor(cam_time=5.0, rec_time=1.0, token="b", confidence=0.9),
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=30.0)
+    sid, _reason = recommend_strategy(am)
+    assert sid == 3  # falls through to the phrase-correction default
