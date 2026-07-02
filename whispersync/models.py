@@ -53,17 +53,6 @@ class AlignmentMap:
 
 
 @dataclass
-class SubClip:
-    """One rendered speech piece inside a compound audio clip: ``offset`` is its
-    position on the compound's own (local) timeline, ``in_point`` the source start."""
-
-    path: Path
-    offset: float
-    in_point: float
-    duration: float
-
-
-@dataclass
 class MediaClip:
     path: Path
     kind: Literal["video", "audio"]
@@ -75,10 +64,6 @@ class MediaClip:
     # (e.g. "Dialogue", "Effects", "Video") so the editor colours/groups clips.
     display_name: str | None = None
     role: str | None = None
-    # When set, this audio clip is a COMPOUND clip: instead of one media file it
-    # holds these separately-placed speech pieces (each editable in Final Cut), so
-    # the user can crossfade/nudge them. The compound spans ``duration`` (= video).
-    subclips: list[SubClip] | None = None
 
 
 @dataclass

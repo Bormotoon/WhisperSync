@@ -147,11 +147,6 @@ class WhisperSyncConfig:
     # only; the real stutter fix is seam-snap-to-silence (keeps exact factors).
     smooth_tempo: bool = False
     max_tempo_jump: float = 0.06
-    # Export the synced voice as a COMPOUND clip of separate speech pieces (each at
-    # its own position, editable) instead of one assembled WAV. Lets the editor
-    # crossfade / nudge / overlap pieces by hand — sidesteps the sync-vs-stutter
-    # tradeoff of monolithic assembly. Off by default (monolith stays the default).
-    audio_compound: bool = False
     # Parallelism for the CPU-bound audio render (ffmpeg has no GPU audio filters):
     # each piece / Flex window is an independent ffmpeg call, spread across a process
     # pool. 0 = auto (os.cpu_count()); 1 = sequential. Output is identical regardless.

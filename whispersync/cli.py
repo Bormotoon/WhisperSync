@@ -128,14 +128,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "voice, keeps the room tone); needs the .sep-venv environment. Default: off.",
     )
     parser.add_argument(
-        "--audio-compound",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Export the synced voice as a compound clip of separate speech pieces "
-        "(each at its own position, editable) instead of one assembled WAV — lets "
-        "you crossfade/nudge pieces by hand in Final Cut (default: off).",
-    )
-    parser.add_argument(
         "--strategy",
         choices=[1, 2, 3, 4],
         default=1,
@@ -347,8 +339,6 @@ def main() -> None:
         overrides["pause_duck_db"] = args.pause_duck_db
     if args.ambience_track is not None:
         overrides["ambience_track"] = args.ambience_track
-    if args.audio_compound is not None:
-        overrides["audio_compound"] = args.audio_compound
 
     if args.no_cache:
         overrides["use_cache"] = False

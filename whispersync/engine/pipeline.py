@@ -32,7 +32,7 @@ from whispersync.engine.timestretch import (
 )
 from whispersync.engine.transcriber import WhisperEngine
 from whispersync.engine.transcript_export import save_transcript
-from whispersync.models import AlignmentMap, MediaClip, SubClip, SyncResult, Transcript
+from whispersync.models import AlignmentMap, MediaClip, SyncResult, Transcript
 
 logger = logging.getLogger(__name__)
 
@@ -468,30 +468,6 @@ def render_pieces(
     return [results[k] for k in range(len(pieces))]
 
 
-def build_subclips(
-    pieces: list[tuple[float, float, float]],
-    seg_paths: list[Path],
-    lead: float,
-) -> list[SubClip]:
-    """Local (compound-clip-timeline) offset/duration for each rendered piece.
-
-    Mirrors the placement ``assemble_continuous`` would use — pieces laid end-to-end,
-    starting after ``lead`` seconds of silence — but instead of concatenating them
-    into one WAV, each piece stays its own file/clip. It lands exactly where it would
-    in a contiguous assembly, while remaining individually editable (crossfade/nudge)
-    once wrapped in a compound clip. ``apply_atempo_segment``/``extract_segment``
-    force each rendered piece to exactly ``in_dur / factor`` seconds, so this cursor
-    math matches the actual rendered file lengths.
-    """
-    subclips: list[SubClip] = []
-    cursor = lead
-    for (rec_start, in_dur, factor), path in zip(pieces, seg_paths, strict=True):
-        out_dur = in_dur / factor
-        subclips.append(SubClip(path=path, offset=cursor, in_point=rec_start, duration=out_dur))
-        cursor += out_dur
-    return subclips
-
-
 def _timeline_end(clips: list[MediaClip]) -> float:
     return max((c.offset + c.duration for c in clips), default=0.0)
 
@@ -785,20 +761,12 @@ def run_pipeline(
         )
         _notify("planning", 1.0, f"Strategy {strategy_id}: {strategy.name}")
 
-        # --- render synced audio per clip: one continuous WAV, or a compound clip
-        # of separately-positioned pieces (config.audio_compound) ---
+        # --- render one continuous synced WAV per clip ---
         _notify("processing", 0.0, "Rendering synced audio...")
         # Small length-preserving fades declick the seams between stretched pieces.
         fade_ms = config.crossfade_ms if config.crossfade_enabled else 0
         workers = resolve_workers(config.render_workers)
         n_jobs = max(len(render_jobs), 1)
-        if config.audio_compound and config.pause_duck_enabled:
-            # Pause ducking attenuates a continuous assembly; in compound mode the
-            # gaps between pieces already carry no audio at all, so it's a no-op.
-            warnings.append(
-                "Pause ducking has no effect in compound mode (gaps between pieces "
-                "are already silent)."
-            )
         for j, job in enumerate(render_jobs):
             clip_idx = job.clip_idx
             audio_status[clip_idx] = "working"
@@ -827,43 +795,29 @@ def run_pipeline(
                         tmp_dir=tdp,
                         workers=workers,
                     )
+                # Each piece is an independent ffmpeg cut/stretch; render them across
+                # the CPU pool (ffmpeg has no GPU audio filters). Order is preserved.
+                seg_paths = render_pieces(pieces, job.rec_path, tdp, fade_ms, workers)
                 # Name the output after the clip (e.g. "DJI_0832_voice.wav") so the
                 # media file matches its timeline clip; fall back to an index.
                 voice_name = audio_clips[clip_idx].display_name or f"synced_{clip_idx:03d}"
-                if config.audio_compound:
-                    # Compound mode: each piece is rendered exactly as before, but kept
-                    # as its own persistent file (in a per-clip folder, not the scratch
-                    # tempdir) at the position it would occupy in a contiguous
-                    # assembly. No assemble_continuous, no forced seam handling — the
-                    # editor crossfades/nudges the pieces by hand in Final Cut.
-                    pieces_dir = audio_synced_dir / f"{voice_name}_pieces"
-                    pieces_dir.mkdir(parents=True, exist_ok=True)
-                    seg_paths = render_pieces(pieces, job.rec_path, pieces_dir, fade_ms, workers)
-                    audio_clips[clip_idx].subclips = build_subclips(pieces, seg_paths, job.lead)
-                    # Nominal path (no single backing file — audio lives in .subclips)
-                    # kept name-consistent with the non-compound output for the GUI.
-                    audio_clips[clip_idx].path = audio_synced_dir / f"{voice_name}.wav"
+                out = audio_synced_dir / f"{voice_name}.wav"
+                # Duck inter-phrase pauses (if enabled) on an intermediate file, then
+                # the ducked result becomes the final output.
+                if config.pause_duck_enabled and job.pauses:
+                    raw = tdp / f"raw_{clip_idx:03d}.wav"
+                    assemble_continuous(seg_paths, job.lead, job.duration, out_sr, raw)
+                    apply_pause_ducking(
+                        raw,
+                        out,
+                        job.pauses,
+                        config.pause_duck_db,
+                        config.pause_duck_fade_ms,
+                        out_sr,
+                    )
                 else:
-                    # Each piece is an independent ffmpeg cut/stretch; render them across
-                    # the CPU pool (ffmpeg has no GPU audio filters). Order is preserved.
-                    seg_paths = render_pieces(pieces, job.rec_path, tdp, fade_ms, workers)
-                    out = audio_synced_dir / f"{voice_name}.wav"
-                    # Duck inter-phrase pauses (if enabled) on an intermediate file, then
-                    # the ducked result becomes the final output.
-                    if config.pause_duck_enabled and job.pauses:
-                        raw = tdp / f"raw_{clip_idx:03d}.wav"
-                        assemble_continuous(seg_paths, job.lead, job.duration, out_sr, raw)
-                        apply_pause_ducking(
-                            raw,
-                            out,
-                            job.pauses,
-                            config.pause_duck_db,
-                            config.pause_duck_fade_ms,
-                            out_sr,
-                        )
-                    else:
-                        assemble_continuous(seg_paths, job.lead, job.duration, out_sr, out)
-                    audio_clips[clip_idx].path = out
+                    assemble_continuous(seg_paths, job.lead, job.duration, out_sr, out)
+            audio_clips[clip_idx].path = out
             audio_clips[clip_idx].in_point = 0.0
             audio_status[clip_idx] = "done"
             _notify(
