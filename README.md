@@ -16,11 +16,11 @@
 
 > Главное окно: drag-and-drop источников, выбор стратегии, многодорожечный таймлайн с живыми статусами и лог в реальном времени.
 
-Принцип работы: **транскрипция** → **поиск якорей** → **вычисление K/offset** → **стратегия синхронизации** → **FCPXML-экспорт**.
+Принцип работы: **транскрипция** → **поиск якорей** → **вычисление K/offset** → **стратегия синхронизации** → **рендер синхронного аудио** → **FCPXML-экспорт**.
 
-Используя [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2), WhisperSync транскрибирует оба аудиопотока с word-level таймстемпами, находит совпадающие слова (якоря) через последовательностное выравнивание, применяет RANSAC-регрессию для устойчивого определения линейного дрейфа часов (K = скорость, offset = смещение), а затем выбирает оптимальную стратегию синхронизации в зависимости от условий записи.
+Используя [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2), WhisperSync транскрибирует оба аудиопотока с word-level таймстемпами, находит совпадающие слова (якоря) через последовательностное выравнивание, применяет RANSAC-регрессию для устойчивого определения линейного дрейфа часов (K = скорость, offset = смещение), а затем одной из стратегий синхронизации собирает звук рекордера под картинку. Рендер сохраняет исходные каналы и битность рекордера (без принудительного даунмикса в моно/16-бит) и использует прозрачный ресемплинг вместо time-stretch там, где реальный дрейф часов достаточно мал.
 
-Результат — FCPXML-файл с точной привязкой аудиоклипов к видео, готовый к импорту в Final Cut Pro или DaVinci Resolve. Никакого рендеринга: всё работает через ссылки на исходные файлы.
+Результат — FCPXML-файл, ссылающийся на исходные видео и на рендеренные синхронные аудиофайлы, готовый к импорту в Final Cut Pro или DaVinci Resolve. Исходные медиафайлы никогда не изменяются.
 
 ## Содержание
 
@@ -38,13 +38,16 @@
 
 ## Features
 
-- **4 стратегии синхронизации** — Global Linear (линейный дрейф), Local Time-Stretch (нелинейный дрейф), Silence Padding (тональность-критичный) и Hybrid (универсальный)
-- **PyQt6 GUI** с dark theme, drag-and-drop зонами, визуализацией стратегий и предпросмотром таймлайна
-- **CLI headless mode** — полный контроль через командную строку, JSON-вывод для автоматизации
-- **Кэш транскрипций** по SHA-256 — повторный запуск без перетранскрибации
-- **FCPXML export** без рендеринга — готовый проект для FCP / DaVinci Resolve
-- **RANSAC-регрессия** — устойчивое определение смещения и дрейфа даже с выбросами
-- **NVIDIA GPU** ускорение (CUDA/cuDNN) с CPU fallback
+- **3 стратегии синхронизации** — Global Linear (линейный дрейф), Local Time-Stretch (нелинейный дрейф) и Hybrid (универсальная, рекомендуемая)
+- **Bit-perfect рендер** — сохраняет каналы и битность рекордера сквозь весь пайплайн; прозрачный ресемплинг вместо atempo/WSOLA на малых дрейфах (< 0.5%); фейды только на реально разрывных швах
+- **Seam-snap-to-silence** — границы кусков в piecewise-стратегиях привязываются к паузам между словами, чтобы шов никогда не попадал внутрь слова
+- **Boundary Flex** — акустическое доуточнение каждого фрагмента кросс-корреляцией (GCC-PHAT) для покадрового губ-синка, включено по умолчанию
+- **PyQt6 GUI** с dark theme, drag-and-drop зонами, визуализацией стратегий и многодорожечным таймлайном
+- **CLI headless mode** — полный контроль через командную строку, JSON-вывод для автоматизации (`--json` шлёт прогресс в stderr, отчёт — в stdout)
+- **Кэш транскрипций** по SHA-256 (с учётом реального device/compute_type) — повторный запуск без перетранскрибации
+- **FCPXML export** — рендеренное синхронное аудио + ссылки на исходные видео
+- **RANSAC-регрессия** и двухступенчатый фильтр выбросов — устойчивое определение смещения и дрейфа даже с ошибочными совпадениями
+- **NVIDIA GPU** ускорение через ctranslate2 (CUDA/cuDNN) с CPU fallback — torch не обязателен
 - **Kроссплатформенность** — Windows, macOS, Linux
 
 ## Screenshots
@@ -62,15 +65,10 @@ in-point / speed / status.
 
 ### Схемы стратегий
 
-| Strategy 1 — Global Linear | Strategy 2 — Local Time-Stretch |
-|----------------------------|---------------------------------|
-| ![S1](docs/images/strategy_1.png) | ![S2](docs/images/strategy_2.png) |
-| Один блок, равномерное масштабирование | Сегменты, каждый со своим коэффициентом |
-
-| Strategy 3 — Silence Padding | Strategy 4 — Hybrid |
-|------------------------------|---------------------|
-| ![S3](docs/images/strategy_3.png) | ![S4](docs/images/strategy_4.png) |
-| Речь не трогается, меняются паузы | Фразы корректируются + паузы добирают остаток |
+| Strategy 1 — Global Linear | Strategy 2 — Local Time-Stretch | Strategy 3 — Hybrid |
+|----------------------------|---------------------------------|----------------------|
+| ![S1](docs/images/strategy_1.png) | ![S2](docs/images/strategy_2.png) | ![S4](docs/images/strategy_4.png) |
+| Один блок, равномерное масштабирование | Сегменты, каждый со своим коэффициентом | Фразы корректируются + паузы добирают остаток |
 
 ### Вкладка «Help» и интерактивный симулятор
 
@@ -81,10 +79,8 @@ in-point / speed / status.
 **дрейфа** и **длины фразы**, переключайте стратегию слева — и смотрите, как
 дорожка рекордера (красная) перестраивается под картинку (синяя), ровно как в
 настоящем таймлайне. Показатели **точности** и **индекса искажения** наглядно
-демонстрируют компромисс: тайм-стретч даёт 100 % совмещение, но искажает речь;
-padding не искажает звук, но оставляет остаточный дрейф внутри длинных фраз;
-гибрид балансирует и то, и другое. Помогает понять, какую стратегию выбрать, ещё
-до запуска.
+демонстрируют компромисс между тайм-стретчем и паузами. Помогает понять, какую
+стратегию выбрать, ещё до запуска.
 
 ## Requirements
 
@@ -92,12 +88,12 @@ padding не искажает звук, но оставляет остаточн
 |-----------|---------|---------------|
 | Python | >= 3.10 | 3.11+ |
 | GPU | CPU fallback | NVIDIA GPU (CUDA/cuDNN) |
-| ffmpeg/ffprobe | В PATH | Последняя версия |
+| ffmpeg/ffprobe | В PATH | Последняя версия с libsoxr |
 | RAM | 4 GB | 8+ GB |
 | Диск | 10 GB свободных | SSD |
 
-- **NVIDIA GPU** — рекомендуется для быстрой транскрипции. Поддерживаются GPUs с Compute Capability >= 5.0. Без GPU работает CPU fallback (медленнее, но функционально).
-- **ffmpeg / ffprobe** — должны быть доступны в `PATH`. Используются для извлечения аудио, time-stretch и конкатенации.
+- **NVIDIA GPU** — рекомендуется для быстрой транскрипции. Транскрипция идёт через [faster-whisper](https://github.com/SYSTRAN/faster-whisper)/ctranslate2, которому **не нужен torch** — CUDA определяется собственной проверкой ctranslate2. Без GPU работает CPU fallback (медленнее, но функционально).
+- **ffmpeg / ffprobe** — должны быть доступны в `PATH`. Используются для извлечения аудио, ресемплинга/time-stretch и сборки. Билд с `libsoxr` даёт более качественный ресемплинг (WhisperSync автоматически откатывается на встроенный резамплер, если `libsoxr` недоступен).
 - **CUDA / cuDNN** — требуются для GPU-режима. Установите через [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit).
 
 ## Installation
@@ -116,10 +112,10 @@ source venv/bin/activate   # Linux/macOS
 pip install -r requirements.txt
 
 # 4. Проверьте окружение
-python whispersync/engine/system_check.py
+python -m whispersync.engine.system_check
 ```
 
-Скрипт `system_check.py` проверит наличие ffmpeg, CUDA, Python, зависимостей и свободного места на диске. Вывод — цветная таблица с результатами + файл `report.json`.
+Скрипт `system_check.py` проверит наличие ffmpeg, CUDA (через ctranslate2 — тот же путь, что использует движок транскрипции в рантайме), Python, зависимости, `.sep-venv` (опциональная фича ambience-track) и свободное место на диске. Вывод — цветная таблица с результатами + файл `report.json` в текущей директории.
 
 ## Usage
 
@@ -134,7 +130,7 @@ python main.py
 PyQt6 GUI с dark theme:
 
 - **Drag-and-drop** видео-папки и аудиофайла
-- Выбор стратегии (4 radio-кнопки) и опции (timebase, crossfade)
+- Выбор стратегии (3 radio-кнопки) и опции (timebase, crossfade, Boundary Flex, pause ducking, ambience track)
 - Кнопка **SYNC** — запуск синхронизации
 - Схема выбранной стратегии (диаграмма)
 - **Многодорожечный таймлайн**: по строке на каждую камеру и на каждую
@@ -147,7 +143,13 @@ PyQt6 GUI с dark theme:
 ### CLI
 
 ```bash
-# Базовый запуск (Strategy 1 — Global Linear)
+# Базовый запуск (стратегия по умолчанию — 3, Hybrid)
+python main.py --cli \
+  --video-dir ./videos \
+  --audio-file rec.wav \
+  --output out.fcpxml
+
+# Strategy 1 — Global Linear
 python main.py --cli \
   --video-dir ./videos \
   --audio-file rec.wav \
@@ -161,24 +163,17 @@ python main.py --cli \
   --strategy 2 \
   --output out.fcpxml
 
-# Strategy 3 — Silence Padding
-python main.py --cli \
-  --video-dir ./videos \
-  --audio-file rec.wav \
-  --strategy 3 \
-  --output out.fcpxml
-
 # Dry run — только выравнивание, без обработки аудио
 python main.py --cli \
   --video-dir ./videos \
   --audio-file rec.wav \
   --dry-run
 
-# JSON-вывод для автоматизации
+# JSON-вывод для автоматизации (прогресс идёт в stderr, отчёт — в stdout)
 python main.py --cli \
   --video-dir ./videos \
   --audio-file rec.wav \
-  --json
+  --json 2>/dev/null
 
 # Язык транскрипции
 python main.py --cli \
@@ -193,6 +188,9 @@ python main.py --cli \
   --model large-v3 \
   --device cpu \
   --compute-type int8
+
+# Версия
+python main.py --cli --version
 ```
 
 ### CLI Options
@@ -200,9 +198,9 @@ python main.py --cli \
 | Флаг | Тип | Описание |
 |------|-----|----------|
 | `--video-dir` | Path | **Обязательный.** Папка с видеофайлами |
-| `--audio-file` | Path | **Обязательный.** Файл аудио с рекордера |
-| `--strategy` | int | Стратегия: `1`, `2`, `3` или `4` (по умолчанию `1`) |
-| `--output` | Path | Путь для FCPXML (по умолчанию `output/sync_output.fcpxml`) |
+| `--audio-file` | Path | **Обязательный.** Файл аудио с рекордера (можно указать несколько раз) |
+| `--strategy` | int | Стратегия: `1`, `2` или `3` (по умолчанию — `WhisperSyncConfig.default_strategy`, `3`/Hybrid). `4` принимается как устаревший алиас `3` |
+| `--output` | Path | Путь для FCPXML (по умолчанию `<video-dir>/sync_output.fcpxml`) |
 | `--model` | str | Модель Whisper (по умолчанию `large-v3`) |
 | `--device` | str | `auto` / `cuda` / `cpu` (по умолчанию `auto`) |
 | `--compute-type` | str | `auto` / `float16` / `int8` и т.д. (по умолчанию `auto`) |
@@ -213,107 +211,97 @@ python main.py --cli \
 | `--fcpxml-version` | str | Версия FCPXML (по умолчанию `1.9`) |
 | `--timebase-source` | str | `camera` или `recorder` — источник sample-rate для таймкодов FCPXML |
 | `--audio-source-camera` | str | Мультикам: имя подпапки-камеры, с которой берётся звук (по умолчанию авто) |
-| `--audio-file` (повтор) | Path | Можно указать несколько раз — несколько рекордеров |
 | `--recorder-mode` | str | `best` (одна дорожка, лучший рекордер на клип) или `all` (каждый рекордер на свою дорожку) |
-| `--crossfade` / `--no-crossfade` | flag | Микро-фейды на стыках аудиосегментов (declick), по умолчанию вкл. |
+| `--crossfade` / `--no-crossfade` | flag | Фейды на реально разрывных швах (declick), по умолчанию вкл. |
 | `--crossfade-ms` | int | Длина фейда в мс (по умолчанию `10`) |
-| `--boundary-flex` / `--no-boundary-flex` | flag | Акустически уточнять старт каждого фрагмента кросс-корреляцией звука для покадрового губ-синка (по умолчанию выкл., добавляет обработку) |
-| `--pause-duck` / `--no-pause-duck` | flag | Приглушать паузы между фразами, чтобы скрыть рассинхрон эмбиента (по умолчанию выкл.) |
+| `--render-workers` | int | Параллельные ffmpeg-процессы рендера (`0`=авто=число ядер, `1`=последовательно) |
+| `--boundary-flex` / `--no-boundary-flex` | flag | Акустически уточнять старт каждого фрагмента кросс-корреляцией звука для покадрового губ-синка (по умолчанию **вкл.**) |
+| `--pause-duck` / `--no-pause-duck` | flag | Приглушать паузы, где молчат обе дорожки, чтобы скрыть рассинхрон эмбиента (по умолчанию выкл.) |
 | `--pause-duck-db` | float | Глубина приглушения пауз в дБ: `0` = выкл. … сильно отрицательное → тишина (по умолчанию `-18`) |
+| `--ambience-track` | flag | Дорожка эмбиента камеры без голоса (нужен `.sep-venv`, см. `setup_sep_venv.sh`), по умолчанию выкл. |
 | `--save-transcripts` / `--no-save-transcripts` | flag | Сохранять полные транскрипты (JSON+SRT) в `output/transcripts/`, по умолчанию вкл. |
-| `--config` | Path | Путь к JSON-конфигу |
+| `--config` | Path | Путь к JSON-конфигу (несуществующий путь — ошибка, а не тихий откат на дефолты) |
 | `--no-cache` | flag | Отключить кэш транскрипций |
 | `--dry-run` | flag | Только выравнивание, без обработки |
-| `--json` | flag | Вывод в формате JSON |
+| `--json` | flag | Вывод отчёта в формате JSON на stdout; весь остальной вывод (прогресс, warnings) идёт в stderr |
 | `--verbose` | flag | Подробное логирование |
+| `--version` | flag | Показать версию и выйти |
+
+Коды возврата: `0` успех, `1` сбой во время выполнения (нет якорей, ошибка ffmpeg и т.п.), `2` ошибка аргументов/конфигурации.
 
 ### Пример вывода (default)
 
 ```
-═══════════════════════════════════════════════
-  WhisperSync — Results
-═══════════════════════════════════════════════
-  Anchors found: 42
-  K (drift):     1.000237
-  Offset:        12.847s
-  Residual:      23.4 ms
-  FCPXML:        output/sync_output.fcpxml
-═══════════════════════════════════════════════
+=== Sync Complete ===
+  Anchors:    42
+  K:          1.000237
+  Offset:     12.8470 s
+  Residual:   23.4 ms
+  Output:     output/sync_output.fcpxml
 ```
 
 ## Strategies Guide
 
 | Стратегия | Название | Когда использовать |
 |-----------|----------|--------------------|
-| **1** | Global Linear | Линейный дрейф часов (наиболее частый случай). Простая коррекция: один `atempo` коэффициент на весь файл. |
+| **1** | Global Linear | Линейный дрейф часов (наиболее частый случай). Простая коррекция: один тайм-конформ коэффициент на весь файл. |
 | **2** | Local Time-Stretch | Нелинейный дрейф, меняющийся темп. Сегменты между якорями растягиваются/сжимаются локально. |
-| **3** | Silence Padding | Важна тональность/интонация. Речь извлекается as-is (без pitch change), тишина между сегментами добавляется/обрезается. |
-| **4** | Hybrid (Global + Silence) | Универсальный, рекомендуемый. Каждая фраза корректируется глобальным `K` клипа и ставится по своему якорю, остаток поглощается тишиной. Устойчив к нелинейному дрейфу и почти без pitch-артефактов. |
+| **3** | Hybrid (Global + Silence) | Универсальный, **рекомендуемый по умолчанию**. Каждая фраза корректируется глобальным `K` клипа и ставится по своему якорю, остаток поглощается паузой. Устойчив к нелинейному дрейфу. |
 
-> **Размещение клипов.** Каждый видеоклип выравнивается к рекордеру независимо, и его позиция на таймлайне берётся из совпавших таймкодов. Клипы не обязаны идти встык — реальные паузы между записями сохраняются (работает для любых источников).
+> **О «тональности».** Для реального дрейфа часов (обычно доли процента) WhisperSync автоматически использует прозрачный ресемплинг вместо time-stretch (`atempo`/WSOLA) — питч сдвигается на ту же долю процента (неслышимо на речи), но без фазовых артефактов WSOLA. `atempo` включается только когда фактическая коррекция куска выходит за этот порог (см. `stretch_method`/`RESAMPLE_CONFORM_MAX_DEVIATION` в конфиге).
 
-> **Мультикамера.** Положите клипы каждой камеры в отдельную подпапку внутри `--video-dir` (например, `videos/camA/`, `videos/camB/`). Каждая камера ляжет на свою дорожку (`lane 1, 2, …`). Чистый звук синхронизируется один раз с камеры-референса (`--audio-source-camera`, по умолчанию выбирается автоматически по лучшему выравниванию), чтобы не задваиваться на углах. Длинные источники (рекордер или видео на много часов) обрабатываются через оконный матчинг — клип сначала грубо локализуется по редким словам, затем точно матчится в узком окне.
+> **Заикание на швах.** В piecewise-стратегиях (2, 3) границы кусков привязываются к паузам между словами рекордера (seam-snap-to-silence), а не режутся точно по таймкоду якоря — это убирает характерный мид-ворд stutter («подготовил» → «подга-га-товил») без искажения синхронизации.
+
+> **Размещение клипов.** Каждый видеоклип выравнивается к рекордеру независимо, и его позиция на таймлайне берётся из совпавших таймкодов. Клипы не обязаны идти встык — реальные паузы между записями сохраняются. Клип с недостаточным числом якорей (`min_anchors`) не доверяется таймкод-фиту и укладывается по порядку имён с предупреждением.
+
+> **Мультикамера.** Положите клипы каждой камеры в отдельную подпапку внутри `--video-dir` (например, `videos/camA/`, `videos/camB/`). Каждая камера ляжет на свою дорожку (`lane 1, 2, …`). Чистый звук синхронизируется один раз с камеры-референса (`--audio-source-camera`, по умолчанию выбирается автоматически по лучшему выравниванию), чтобы не задваиваться на углах. Видеофайлы, оставшиеся прямо в корне `--video-dir` при наличии подпапок-камер, игнорируются с предупреждением. Длинные источники (рекордер или видео на много часов) обрабатываются через оконный матчинг — клип сначала грубо локализуется по редким словам, затем точно матчится в узком окне.
 
 > **Несколько рекордеров.** Передайте `--audio-file` несколько раз. Каждый клип выравнивается ко всем рекордерам; таймлайн строится по «основному» (с лучшим покрытием). `--recorder-mode best` (по умолчанию) — на каждый клип берётся лучший рекордер, одна аудиодорожка; `--recorder-mode all` — каждый рекордер кладётся на свою дорожку (для нескольких петличек/спикеров). **Важно:** если это просто куски одного устройства (рекордер бьёт запись по 15 мин) — это один источник с одними часами, их надо склеить заранее (`ffmpeg concat`, без потерь), а не передавать как разные рекордеры.
 
 ### Strategy 1: Global Linear
 
-**Применение:** Один коэффициент `atempo = 1/K` на весь аудиофайл.
+**Применение:** Один тайм-конформ коэффициент на весь аудиофайл.
 
 ```
 Видео:    |========================>
-Аудио:    |========================>  × atempo(1/K)
+Аудио:    |========================>  × conform(1/K)
 ```
 
-- Быстро (одна операция ffmpeg)
+- Быстро (одна операция на клип)
 - Минимальные артефакты
 - Идеально для стабильных часов
 
 ### Strategy 2: Local Time-Stretch
 
-**Применение:** Каждый сегмент между якорями получает свой `atempo`.
+**Применение:** Каждый сегмент между якорями получает свой коэффициент, с границей, притянутой к ближайшей паузе между словами.
 
 ```
 Видео:    |=== seg1 ===|=== seg2 ===|=== seg3 ===>
-Аудио:    |== seg1 ==>|==== seg2 ====|== seg3 ==>  (каждый со своим atempo)
+Аудио:    |== seg1 ==>|==== seg2 ====|== seg3 ==>  (каждый со своим коэффициентом)
 ```
 
 - Точнее при нестабильном дрейфе
-- Несколько операций ffmpeg
-- На стыках сегментов применяются микро-фейды (declick), включаются/выключаются галочкой «Crossfade segment seams» в GUI или `--crossfade`/`--no-crossfade` в CLI
+- Несколько операций на клип
+- Фейды применяются только на швах, которые реально стали разрывными (например, после доуточнения Boundary Flex)
 
-### Strategy 3: Silence Padding
+### Strategy 3: Hybrid (Global + Silence)
 
-**Применение:** Речь извлекается без изменения pitch, тишина компенсирует смещение.
-
-```
-Видео:    |== речь ==| тишина |== речь ==| тишина |== речь ==>
-Аудио:    |== речь ==|silence |== речь ==|silence |== речь ==>
-```
-
-- Сохраняет оригинальную тональность
-- Подходит для интервью, подкастов
-- Предупреждение при отрицательных gaps (перекрытие речи)
-
-### Strategy 4: Hybrid (Global + Silence)
-
-**Применение:** Каждая фраза корректируется глобальным `K` клипа (`atempo = 1/K`)
-и ставится по своему якорю; промежутки между фразами поглощают остаток дрейфа.
+**Применение:** Каждая фраза корректируется глобальным `K` клипа и ставится по своему якорю; промежутки между фразами поглощают остаток дрейфа.
 
 ```
 Видео:    |== фраза ==| пауза |== фраза ==| пауза |== фраза ==>
 Аудио:    |=×(1/K)===| silence|=×(1/K)===| silence|=×(1/K)==>
 ```
 
-- Снимает линейный дрейф (как Strategy 1) и доводит по фразам (как Strategy 3)
-- Устойчив к нелинейному дрейфу, pitch-сдвиг ≈ 0.1% (неслышимо)
+- Снимает линейный дрейф (как Strategy 1) и доводит по фразам
+- Устойчив к нелинейному дрейфу
 - Рекомендуемый режим по умолчанию для длинных разговорных записей
 
 ## Configuration
 
 ### JSON Config
 
-WhisperSync поддерживает JSON-конфигурацию через `--config config.json`:
+WhisperSync поддерживает JSON-конфигурацию через `--config config.json`. Неизвестные ключи (например, опечатка в имени поля) не приводят к ошибке, но пишут предупреждение в лог — так typo не остаётся незамеченной.
 
 ```json
 {
@@ -335,7 +323,7 @@ WhisperSync поддерживает JSON-конфигурацию через `-
     "video_exts": [".mp4", ".mov", ".mxf", ".avi", ".mkv"],
     "audio_exts": [".wav", ".mp3", ".m4a", ".flac"],
     "fcpxml_version": "1.9",
-    "default_strategy": 1,
+    "default_strategy": 3,
     "cache_dir": null,
     "output_dir": null,
     "use_cache": true,
@@ -344,25 +332,37 @@ WhisperSync поддерживает JSON-конфигурацию через `-
     "recorder_mode": "best",
     "crossfade_enabled": true,
     "crossfade_ms": 10,
+    "stretch_method": "auto",
+    "seam_snap_max_s": 0.4,
+    "render_workers": 0,
     "min_anchors": 8,
     "anchor_min_confidence": 0.6,
-    "phrase_gap_threshold": 0.6
+    "phrase_gap_threshold": 0.6,
+    "boundary_flex": true,
+    "pause_duck_enabled": false,
+    "pause_duck_db": -18.0,
+    "ambience_track": false
 }
 ```
 
 **Приоритет:** CLI-флаги > JSON-конфиг > значения по умолчанию.
 
-### Описание полей
+### Описание ключевых полей
 
 | Поле | Тип | Описание |
 |------|-----|----------|
 | `model` | str | Модель Whisper (`tiny`, `base`, `small`, `medium`, `large-v3`) |
-| `device` | str | Устройство: `cuda` или `cpu` |
-| `compute_type` | str | Тип вычислений: `float16`, `int8`, `float32` |
+| `device` | str | Устройство: `auto` / `cuda` / `cpu` |
+| `compute_type` | str | Тип вычислений: `auto`, `float16`, `int8`, `float32` |
 | `language` | str/null | Код языка или `null` для автоопределения |
 | `vad_filter` | bool | Фильтрация VAD (Voice Activity Detection) |
-| `min_anchors` | int | Минимальное количество якорей (по умолчанию 8) |
-| `anchor_min_confidence` | float | Минимальная уверенность якоря (0.0–1.0) |
+| `default_strategy` | int | Стратегия по умолчанию (`1`, `2` или `3`) — единый источник правды для GUI и CLI |
+| `stretch_method` | str | `auto` (ресемплинг на малом дрейфе, atempo на большом), `atempo` или `resample` |
+| `seam_snap_max_s` | float | Максимальный сдвиг границы куска до ближайшей паузы между словами (сек) |
+| `boundary_flex` | bool | Акустическое доуточнение старта каждого куска (вкл. по умолчанию) |
+| `min_anchors` | int | Минимальное количество якорей для доверия таймкод-фиту (по умолчанию 8) |
+| `anchor_min_confidence` | float | Минимальная уверенность слова, чтобы участвовать в поиске якорей (0.0–1.0) |
+| `render_workers` | int | Параллельные ffmpeg-процессы рендера (`0`=авто) |
 
 ## Troubleshooting
 
@@ -372,11 +372,7 @@ WhisperSync поддерживает JSON-конфигурацию через `-
 CUDA not available, falling back to CPU
 ```
 
-**Решение:** Установите [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) и cuDNN. Проверьте совместимость версий PyTorch и CUDA:
-
-```bash
-python -c "import torch; print(torch.cuda.is_available())"
-```
+**Решение:** Установите [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) и cuDNN. Запустите `python -m whispersync.engine.system_check` — он проверяет CUDA тем же путём (ctranslate2), что использует движок транскрипции в рантайме, и не требует torch.
 
 ### ffmpeg not in PATH
 
@@ -402,6 +398,8 @@ Warning: Only 3 anchors found (minimum: 8)
 - Разные языки — укажите `--language`
 - Тихая речь — проверьте уровень сигнала на рекордере
 
+Клип с недостаточным числом якорей не доверяется таймкод-фиту и укладывается по порядку имён (с предупреждением), а не по потенциально ошибочной позиции.
+
 ### Большой residual
 
 ```
@@ -415,7 +413,7 @@ Residual: 156.2 ms (high — results may be inaccurate)
 
 ### Кэш транскрипций
 
-Кэш хранится в `~/.cache/whispersync/` (Linux) или аналогичном каталоге. Для сброса:
+Кэш хранится в `~/.cache/whispersync/` (Linux) или аналогичном каталоге. Ключ кэша учитывает фактическое (резолвнутое) устройство/тип вычислений, а не только запрошенное — прогон на GPU и прогон с фолбэком на CPU никогда не путают кэш друг друга. Для сброса:
 
 ```bash
 # Через CLI
@@ -429,50 +427,58 @@ rm -rf ~/.cache/whispersync/
 
 ```
 WhisperSync/
-├── main.py                          # Entry point (GUI / CLI dispatch)
+├── main.py                          # Тонкий шим -> whispersync.app:main (для запуска из checkout)
 ├── whispersync/
+│   ├── app.py                       # Entry point (GUI / CLI dispatch), также whispersync-gui
 │   ├── cli.py                       # argparse CLI interface
 │   ├── config.py                    # WhisperSyncConfig dataclass + JSON loader
-│   ├── models.py                    # Word, Segment, Transcript, Anchor, SyncPlan...
+│   ├── models.py                    # Word, Segment, Transcript, Anchor, AlignmentMap, MediaClip, SyncPlan...
 │   ├── engine/
-│   │   ├── pipeline.py              # End-to-end orchestration
-│   │   ├── transcriber.py           # WhisperEngine + SHA-256 cache
-│   │   ├── matcher.py               # Anchor finding + RANSAC regression
-│   │   ├── strategies.py            # 3 sync strategies
-│   │   ├── timestretch.py           # ffmpeg atempo/segment/crossfade wrappers
-│   │   ├── media.py                 # ffprobe, audio extraction, atempo chain
-│   │   ├── export.py                # FCPXML generation
-│   │   └── system_check.py          # Environment validation
+│   │   ├── pipeline.py              # End-to-end оркестрация (в т.ч. clip_pieces — реальное планирование стратегий)
+│   │   ├── transcriber.py           # WhisperEngine + SHA-256 кэш (по резолвнутому device/compute_type)
+│   │   ├── matcher.py               # Поиск якорей + RANSAC-регрессия + двухступенчатый фильтр выбросов
+│   │   ├── strategies.py            # Реестр имён/описаний стратегий (id -> name/description)
+│   │   ├── acoustic.py              # GCC-PHAT кросс-корреляция, Boundary Flex
+│   │   ├── separation.py            # Ambience-track через изолированный .sep-venv
+│   │   ├── timestretch.py           # ffmpeg resample-conform/atempo/segment/assemble обёртки
+│   │   ├── media.py                 # ffprobe, извлечение аудио, мастер-WAV, atempo chain
+│   │   ├── export.py                # Генерация FCPXML
+│   │   ├── naming.py                # Natural sort имён файлов
+│   │   ├── transcript_export.py     # Сохранение транскриптов (JSON+SRT)
+│   │   └── system_check.py          # Проверка окружения
 │   └── gui/
 │       ├── main_window.py           # PyQt6 MainWindow
 │       ├── worker.py                # QObject background worker
 │       ├── theme.qss                # Dark theme stylesheet
-│       └── widgets/                 # DropZone, LogView, StrategyDiagram, TimelinePreview
+│       └── widgets/                 # DropZone, LogView, StrategyDiagram, TimelinePreview, HelpPage, SyncSimulator
 └── tests/                           # pytest test suite
 ```
 
 ### Поток данных
 
 ```
-Video files + Audio file
+Video files + Audio file(s)
         │
         ▼
-   probe() ──────────► MediaInfo
+   probe() ──────────► MediaInfo (в т.ч. каналы/битность аудио)
         │
         ▼
-   extract_audio_to_wav() ──► 16kHz mono WAV
+   extract_audio_master() ──► лоссless PCM WAV рекордера (родные каналы, целевой sample rate)
         │
         ▼
    WhisperEngine.transcribe() ──► Transcript (word-level timestamps)
         │
         ▼
-   matcher.align() ──► find_anchors() → ransac_linear_fit() → AlignmentMap
+   matcher.align() ──► find_anchors() → reject_gross/residual_outliers() → ransac_linear_fit() → AlignmentMap
         │
         ▼
-   Strategy.plan() ──► SyncPlan (clips + audio_ops)
+   pipeline.clip_pieces() ──► пьесы (rec_start, duration, factor), с seam-snap-to-silence
         │
         ▼
-   Pipeline executes audio_ops ──► Processed audio segments
+   [опц.] acoustic.refine_piece_boundaries() ──► Boundary Flex доуточнение
+        │
+        ▼
+   render_pieces() + assemble_continuous() ──► синхронный WAV (родные каналы/битность, дакинг паузы инлайн)
         │
         ▼
    generate_fcpxml() ──► .fcpxml (Final Cut Pro / DaVinci Resolve)
@@ -486,6 +492,7 @@ Video files + Audio file
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — правила сообщества
 - [SECURITY.md](SECURITY.md) — как сообщить об уязвимости
 - [CHANGELOG.md](CHANGELOG.md) — история изменений
+- [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md) — полный технический анализ проекта, известные проблемы и план развития
 
 Перед отправкой PR убедитесь, что проходят проверки:
 
@@ -498,6 +505,6 @@ pytest
 
 ## License
 
-MIT License — Copyright (c) 2024-2025 WhisperSync Contributors.
+MIT License — Copyright (c) 2024-2026 WhisperSync Contributors.
 
 See [LICENSE](LICENSE) for details.

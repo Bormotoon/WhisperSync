@@ -4,6 +4,73 @@ All notable changes to WhisperSync will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — quality/reliability overhaul (2026-07-02)
+
+A full project audit (`PROJECT_ANALYSIS.md`) found that the rendered voice
+track was audibly worse than the recorder source for reasons unrelated to
+synchronization, that strategies 3 and 4 had silently become identical, and a
+long tail of reliability/cross-platform/dead-code issues. This release fixes
+all of it:
+
+- **Bit-perfect render path**: the render no longer forces mono/16-bit —
+  every stage (extract, resample-conform/atempo, assemble, pause-duck)
+  preserves the recorder's native channel count and a lossless PCM codec
+  matching its bit depth. Recorders are normalized to a lossless master WAV
+  once up front (fixes non-sample-accurate cutting from lossy sources like
+  mp3/m4a, and format mismatches between pieces and lead-silence). A new
+  transparent resample ("varispeed") conform replaces `atempo`/WSOLA for the
+  small tempo changes real clock drift produces, avoiding WSOLA's phase/
+  texture artifacts where they weren't needed. Fades apply only to seams that
+  are acoustically discontinuous (e.g. nudged by Boundary Flex), not to every
+  piece boundary — the old behaviour carved an audible volume dip into
+  otherwise-continuous audio on nearly every seam of the phrase-wise
+  strategies. Pause-ducking is folded into the assembly pass instead of a
+  second full decode/encode.
+- **Strategies 3 and 4 merged**: in the real render path they had become
+  byte-identical (old strategy 3 "Silence Padding" promised zero pitch-shift
+  but was actually time-stretching every phrase like Hybrid). Now one honest
+  "Hybrid" strategy at id 3; `--strategy 4` is a deprecated alias.
+- **Seam-snap-to-silence** replaces the old tempo-factor smoothing (which
+  fixed the mid-word stutter by averaging atempo factors but let speech drift
+  off the picture by up to 1.4s): piece boundaries now snap to the nearest
+  recorder inter-word silence, so a seam never lands mid-word without
+  touching any piece's tempo factor.
+- **Pause ducking** now ducks only where BOTH the camera and recorder tracks
+  are actually silent (from full word lists), not gaps between matched
+  anchors — a quiet phrase or a word Whisper missed no longer gets
+  attenuated as a false "pause".
+- **Reliability**: Whisper's VRAM is freed right after alignment instead of
+  being held through rendering/ambience separation (a common GPU-OOM cause);
+  clips with no audio track no longer abort the whole run; a JSON config with
+  a typo'd key now warns instead of silently no-opping; the transcript cache
+  key is keyed by the actually-resolved device/compute-type, not the literal
+  `"auto"`.
+- **Cross-platform**: `file://` URIs use `Path.as_uri()` (the old hand-rolled
+  version mis-encoded Windows paths); "Open Output Folder" uses
+  `QDesktopServices` instead of Linux-only `xdg-open`.
+- **CLI**: `--json` now sends all human-readable output to stderr so the
+  report on stdout is clean for piping; added `--version`; exit codes
+  distinguish usage errors (2) from run failures (1); fixed `main.py --cli`
+  passing `--cli` through to argparse unstripped.
+- **Dead code removed**: `engine/dtw.py` (banded-DTW anchor matcher — shelved
+  after real-data measurements showed it performed worse than the legacy
+  matcher), `acoustic.refine_anchors` (Tier-2 anchor correction, superseded
+  once the real float bug was found in the render path, not the anchor
+  layer), the entire `plan_clip`-based `SyncStrategy` class hierarchy in
+  `strategies.py` (the pipeline only ever read `.name`; real planning lives
+  in `pipeline.clip_pieces`), and several unused `timestretch`/`naming`
+  helpers.
+- **Packaging**: `pyproject.toml` now declares a build backend and its actual
+  dependencies (`pip install .` previously installed nothing); dropped the
+  unused `pydub`/`ffmpeg-python`; the GUI/CLI dispatcher moved from
+  repo-root `main.py` into `whispersync/app.py` so the `whispersync-gui`
+  entry point resolves after a wheel install.
+- Unified defaults: `default_strategy` (1 → 3) and `boundary_flex`
+  (off → on) are now read from `WhisperSyncConfig` by both the CLI and the
+  GUI, instead of disagreeing with each other.
+
+See `PROJECT_ANALYSIS.md` for the full technical audit this release addresses.
+
 ### Added
 - **GitHub-ready project**: real GUI screenshots (rendered via Qt offscreen) in
   the README, bilingual README (RU + `README.en.md`), `CONTRIBUTING.md`,
