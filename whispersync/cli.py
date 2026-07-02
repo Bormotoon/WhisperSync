@@ -155,11 +155,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strategy",
         choices=[1, 2, 3, 4],
-        default=1,
+        default=None,
         type=int,
         help="Sync strategy: 1=global linear, 2=local stretch, 3=hybrid "
-        "(recommended; default: 1). 4 is accepted as a deprecated alias for 3 "
-        "(the old id-3 'Silence Padding' was merged into Hybrid).",
+        "(recommended; default — see WhisperSyncConfig.default_strategy). 4 is "
+        "accepted as a deprecated alias for 3 (the old id-3 'Silence Padding' "
+        "was merged into Hybrid).",
     )
     parser.add_argument(
         "--timebase-source",
@@ -326,17 +327,6 @@ def main() -> None:
             _print(f"Error: {af} is not a file", to_stderr=args.json_output)
             sys.exit(EXIT_USAGE_ERROR)
 
-    if args.strategy == 4:
-        # Old strategy 3 ("Silence Padding") was merged into Hybrid (now id 3) —
-        # they had become byte-identical in the real render path. 4 is kept as a
-        # deprecated alias so existing scripts/configs don't break outright.
-        _print(
-            "Warning: --strategy 4 is deprecated; strategies 3 and 4 were merged "
-            "into a single Hybrid strategy (id 3). Using strategy 3.",
-            to_stderr=args.json_output,
-        )
-        args.strategy = 3
-
     overrides: dict[str, object] = {}
     if args.model:
         overrides["model"] = args.model
@@ -385,6 +375,20 @@ def main() -> None:
     except FileNotFoundError as exc:
         _print(f"Error: {exc}", to_stderr=args.json_output)
         sys.exit(EXIT_USAGE_ERROR)
+
+    # --strategy left unset -> config.default_strategy (the single source of
+    # truth the GUI also reads; see PROJECT_ANALYSIS.md §4.4). 4 is a
+    # deprecated alias for 3: the old id-3 "Silence Padding" was merged into
+    # Hybrid because they had become byte-identical in the real render path.
+    if args.strategy is None:
+        args.strategy = config.default_strategy
+    elif args.strategy == 4:
+        _print(
+            "Warning: --strategy 4 is deprecated; strategies 3 and 4 were merged "
+            "into a single Hybrid strategy (id 3). Using strategy 3.",
+            to_stderr=args.json_output,
+        )
+        args.strategy = 3
 
     # Default the output next to the sources (the video folder), which usually
     # lives on a volume with room — unlike the repo's working directory.

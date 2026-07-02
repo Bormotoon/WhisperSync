@@ -60,7 +60,6 @@ def test_generate_and_validate_fcpxml(tmp_path: Path) -> None:
                 lane=-1,
             ),
         ],
-        audio_ops=[{"type": "atempo", "factor": 0.999}],
         total_duration=60.0,
     )
 
@@ -124,7 +123,6 @@ def test_fcpxml_roundtrip_times(tmp_path: Path) -> None:
             MediaClip(Path("/v/a.mp4"), "video", 0.0, 0.0, 120.0, 1),
             MediaClip(Path("/a/r.wav"), "audio", 5.0, 0.0, 115.0, -1),
         ],
-        audio_ops=[],
         total_duration=120.0,
     )
 
@@ -157,7 +155,6 @@ def test_spine_times_are_frame_aligned(tmp_path: Path) -> None:
             MediaClip(Path("/v/DJI_0829.mp4"), "video", 2.9106329, 0.0, 60.04, 1),
             MediaClip(Path("/a/synced_000.wav"), "audio", 2.9106329, 0.0, 60.04, -1),
         ],
-        audio_ops=[],
         total_duration=62.95,
     )
     out = tmp_path / "fa.fcpxml"
@@ -193,7 +190,6 @@ def test_mixed_fps_and_relative_src(tmp_path: Path) -> None:
             MediaClip(Path("/v/B.mp4"), "video", 12.0, 0.0, 10.0, 2),
             MediaClip(synced, "audio", 0.0, 0.0, 10.0, -1),
         ],
-        audio_ops=[],
         total_duration=22.0,
     )
     out = tmp_path / "sync_output.fcpxml"
@@ -255,7 +251,7 @@ def test_display_names_and_roles(tmp_path: Path) -> None:
             role="Effects",
         ),
     ]
-    plan = SyncPlan(strategy_id=3, clips=clips, audio_ops=[], total_duration=10.0)
+    plan = SyncPlan(strategy_id=3, clips=clips, total_duration=10.0)
     out = tmp_path / "roles.fcpxml"
     generate_fcpxml(plan, [_vinfo("/v/DJI_0830.MOV", 10.0)], out, audio_sample_rate=48000)
     root = ET.parse(out).getroot()
@@ -299,7 +295,7 @@ def test_relative_media_src_is_percent_encoded(tmp_path: Path) -> None:
             lane=-1,
         ),
     ]
-    plan = SyncPlan(strategy_id=1, clips=clips, audio_ops=[], total_duration=5.0)
+    plan = SyncPlan(strategy_id=1, clips=clips, total_duration=5.0)
     out = tmp_path / "encoded.fcpxml"
     generate_fcpxml(plan, [_vinfo("/v/a.mov", 5.0)], out, audio_sample_rate=48000)
 
@@ -321,7 +317,7 @@ def test_no_role_omits_attribute(tmp_path: Path) -> None:
             lane=1,
         )
     ]
-    plan = SyncPlan(strategy_id=1, clips=clips, audio_ops=[], total_duration=5.0)
+    plan = SyncPlan(strategy_id=1, clips=clips, total_duration=5.0)
     out = tmp_path / "norole.fcpxml"
     generate_fcpxml(plan, [_vinfo("/v/a.mov", 5.0)], out)
     clip = ET.parse(out).getroot().find(".//asset-clip")

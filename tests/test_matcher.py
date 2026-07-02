@@ -259,6 +259,6 @@ def test_align_windowed_on_long_recorder() -> None:
     cfg = WhisperSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
     result = align(cam_t, rec_t, cfg)
     assert abs(result.k - true_k) < 0.002
-    # the clip's local 0 must map back to recorder t≈2400
-    assert abs(result.rec_to_cam(clip_offset)) < 0.5
+    # the clip's local 0 must map back to recorder t≈2400: t_cam = offset + k*t_rec
+    assert abs(result.offset + result.k * clip_offset) < 0.5
     assert len(result.anchors) >= 10

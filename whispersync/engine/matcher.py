@@ -282,28 +282,16 @@ def _window_recorder(
     return windowed
 
 
-def _match_words(
-    cam_words: list[Word], rec_words: list[Word], config: WhisperSyncConfig
-) -> list[Anchor]:
-    """Produce anchors from normalized words, dispatching on ``config.align_mode``.
+def _match_words(cam_words: list[Word], rec_words: list[Word]) -> list[Anchor]:
+    """Produce anchors from normalized words via the difflib LCS matcher.
 
-    "dtw" uses the repeat-robust banded DTW; if it yields fewer than ``min_anchors``
-    it falls back to the legacy difflib matcher on the same words (mirrors the
-    windowed-vs-full retry policy in ``align``). "legacy" uses difflib directly.
+    This used to also dispatch to a banded-DTW backend (``config.align_mode
+    == "dtw"``); real-data measurements showed it performed worse than
+    difflib on this project's actual failure modes (see the git history and
+    PROJECT_ANALYSIS.md for the investigation) and it was removed along with
+    ``engine/dtw.py``. Kept as a thin wrapper — a single call site for word
+    matching — in case a future backend is worth adding here again.
     """
-    if config.align_mode == "dtw":
-        # Local import avoids a hard dependency for the legacy path.
-        from whispersync.engine.dtw import dtw_anchors
-
-        coarse = estimate_coarse_delta(cam_words, rec_words, config)
-        anchors = dtw_anchors(cam_words, rec_words, config, coarse)
-        if len(anchors) >= config.min_anchors:
-            return anchors
-        logger.info(
-            "DTW produced %d anchors (< min %d); falling back to difflib",
-            len(anchors),
-            config.min_anchors,
-        )
     return _anchors_from_words(cam_words, rec_words)
 
 
@@ -318,12 +306,12 @@ def align(
         raise ValueError("No usable words to align (check confidence threshold / speech content).")
 
     rec_used = _window_recorder(cam_words, rec_words, config)
-    anchors = _match_words(cam_words, rec_used, config)
+    anchors = _match_words(cam_words, rec_used)
 
     # If the coarse window was misleading, retry once against the full reference.
     if len(anchors) < config.min_anchors and rec_used is not rec_words:
         logger.info("Windowed match weak (%d anchors); retrying full reference", len(anchors))
-        anchors = _match_words(cam_words, rec_words, config)
+        anchors = _match_words(cam_words, rec_words)
 
     if len(anchors) < 2:
         raise ValueError(

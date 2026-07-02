@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -133,10 +134,12 @@ class MainWindow(QMainWindow):
         self.radio1 = QRadioButton("1 — Global Linear Calibration")
         self.radio2 = QRadioButton("2 — Local Time-Stretch")
         self.radio3 = QRadioButton("3 — Hybrid (Global + Silence)  ·  recommended")
-        # Strategy 3 (Hybrid) is the recommended default: near-perfect alignment at
-        # about half the distortion of pure stretching. (The old strategy 3,
-        # "Silence Padding", was merged into Hybrid — see PROJECT_ANALYSIS.md §2.1.)
-        self.radio3.setChecked(True)
+        strategy_radios = {1: self.radio1, 2: self.radio2, 3: self.radio3}
+        # config.default_strategy is the single source of truth for the default
+        # (the CLI's --strategy default reads the same field) — see
+        # PROJECT_ANALYSIS.md §4.4. (The old strategy 3, "Silence Padding", was
+        # merged into Hybrid — see §2.1.)
+        strategy_radios[self.config.default_strategy].setChecked(True)
         for r in (self.radio1, self.radio2, self.radio3):
             r.setMinimumHeight(26)  # never let the label clip vertically
             r.toggled.connect(self._on_strategy_changed)
@@ -152,10 +155,12 @@ class MainWindow(QMainWindow):
         self.crossfade_check.setChecked(self.config.crossfade_enabled)
         options_layout.addRow(self.crossfade_check)
 
-        # Boundary Flex — acoustic sub-frame refinement. On by default for the best
-        # lip-sync out of the box; costs a little extra processing.
+        # Boundary Flex — acoustic sub-frame refinement. config.boundary_flex is
+        # the single source of truth for the default (see PROJECT_ANALYSIS.md
+        # §4.4); on by default for the best lip-sync out of the box, costs a
+        # little extra processing.
         self.flex_check = QCheckBox("Boundary Flex (acoustic sub-frame lip-sync)")
-        self.flex_check.setChecked(True)
+        self.flex_check.setChecked(self.config.boundary_flex)
         self.flex_check.setToolTip(
             "Fine-tune each phrase's position by cross-correlating the camera and "
             "recorder audio, so lips and sound match to within a frame."
@@ -403,15 +408,24 @@ class MainWindow(QMainWindow):
         output_path = output_dir / "sync_output.fcpxml"
 
         strategy_id = self._get_strategy_id()
-        self.config.timebase_source = self.timebase_combo.currentText()
-        self.config.crossfade_enabled = self.crossfade_check.isChecked()
-        self.config.boundary_flex = self.flex_check.isChecked()
-        self.config.pause_duck_enabled = self.duck_check.isChecked()
-        # Slider floor (-60) means full silence; map it to a very negative dB so the
-        # ducking filter zeroes the gain (apply_pause_ducking treats ≤ -120 as 0).
+        # A copy, not self.config mutated in place: self.config is also read by
+        # the UI (e.g. re-opening file dialogs), and the pipeline runs on a
+        # background thread — if the user toggles a checkbox while a run is in
+        # flight, mutating the shared object would change settings out from
+        # under the running pipeline mid-run. See PROJECT_ANALYSIS.md §4.5.
         db = self.duck_slider.value()
-        self.config.pause_duck_db = -200.0 if db <= -60 else float(db)
-        self.config.ambience_track = self.ambience_check.isChecked()
+        # Slider floor (-60) means full silence; map it to a very negative dB so
+        # the ducking filter zeroes the gain (apply_pause_ducking treats <= -120
+        # as 0).
+        run_config = dataclasses.replace(
+            self.config,
+            timebase_source=self.timebase_combo.currentText(),
+            crossfade_enabled=self.crossfade_check.isChecked(),
+            boundary_flex=self.flex_check.isChecked(),
+            pause_duck_enabled=self.duck_check.isChecked(),
+            pause_duck_db=-200.0 if db <= -60 else float(db),
+            ambience_track=self.ambience_check.isChecked(),
+        )
 
         self.right_tabs.setCurrentIndex(0)  # show the Run tab during processing
         self.btn_sync.setEnabled(False)
@@ -421,7 +435,7 @@ class MainWindow(QMainWindow):
         self.log_view.append_log(f"Starting sync with Strategy {strategy_id}...")
 
         self._worker = SyncWorker(
-            config=self.config,
+            config=run_config,
             video_dir=Path(video_path),
             audio_files=[Path(audio_path)],
             strategy_id=strategy_id,

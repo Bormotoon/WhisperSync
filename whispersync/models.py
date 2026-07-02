@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 
 @dataclass
@@ -48,9 +48,6 @@ class AlignmentMap:
     k: float
     residual_ms: float
 
-    def rec_to_cam(self, t: float) -> float:
-        return self.offset + self.k * t
-
 
 @dataclass
 class MediaClip:
@@ -70,7 +67,6 @@ class MediaClip:
 class SyncPlan:
     strategy_id: int
     clips: list[MediaClip]
-    audio_ops: list[dict[str, Any]]
     total_duration: float
 
 

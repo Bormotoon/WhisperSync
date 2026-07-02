@@ -174,26 +174,6 @@ def apply_pause_ducking(
     return output_path
 
 
-def apply_atempo(input_path: Path, output_path: Path, factor: float) -> Path:
-    chain = build_atempo_chain(factor)
-    af = ",".join(chain)
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(input_path),
-        "-af",
-        af,
-        str(output_path),
-    ]
-    logger.info("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg atempo failed: {result.stderr}")
-    logger.info("atempo done → %s", output_path)
-    return output_path
-
-
 def apply_atempo_segment(
     input_path: Path,
     output_dir: Path,
@@ -445,69 +425,6 @@ def generate_silence(
     return output_path
 
 
-def assemble_clip(
-    placements: list[tuple[Path, float]],
-    total_duration: float,
-    sample_rate: int,
-    output_path: Path,
-) -> Path:
-    """Mix pre-cut speech segments onto a silent bed of ``total_duration`` so the
-    result is a single WAV exactly as long as the source video clip.
-
-    ``placements`` is a list of ``(segment_wav, local_start_seconds)``; each
-    segment is delayed to its position and summed (segments do not overlap, so a
-    plain sum reproduces them with silence in the gaps). One ffmpeg call.
-    """
-    if not placements:
-        return generate_silence(output_path, total_duration, sample_rate)
-
-    inputs: list[str] = [
-        "-f",
-        "lavfi",
-        "-t",
-        f"{total_duration:.6f}",
-        "-i",
-        f"anullsrc=r={sample_rate}:cl=mono",  # input 0: silent bed
-    ]
-    for seg_path, _local in placements:
-        inputs += ["-i", str(seg_path)]
-
-    parts: list[str] = []
-    labels = ["[0:a]"]  # the bed
-    for i, (_seg_path, local) in enumerate(placements):
-        delay_ms = max(0, round(local * 1000))
-        parts.append(f"[{i + 1}:a]adelay={delay_ms}:all=1[s{i}]")
-        labels.append(f"[s{i}]")
-    n_mix = len(labels)
-    parts.append(
-        f"{''.join(labels)}amix=inputs={n_mix}:normalize=0:duration=first[mx];"
-        f"[mx]atrim=0:{total_duration:.6f},asetpts=PTS-STARTPTS[out]"
-    )
-    filter_complex = ";".join(parts)
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        *inputs,
-        "-filter_complex",
-        filter_complex,
-        "-map",
-        "[out]",
-        "-ar",
-        str(sample_rate),
-        "-ac",
-        "1",
-        "-acodec",
-        "pcm_s16le",
-        str(output_path),
-    ]
-    logger.info("Assembling synced clip (%d segments) → %s", len(placements), output_path)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg clip assembly failed: {result.stderr[-800:]}")
-    return output_path
-
-
 def assemble_continuous(
     segment_paths: list[Path],
     lead_silence: float,
@@ -609,57 +526,4 @@ def assemble_continuous(
         os.unlink(list_path)
         if lead_path is not None:
             lead_path.unlink(missing_ok=True)
-    return output_path
-
-
-def concatenate_segments(segment_paths: list[Path], output_path: Path) -> Path:
-    fd, list_path = tempfile.mkstemp(suffix=".txt", prefix="filelist_")
-    try:
-        with os.fdopen(fd, "w") as f:
-            for p in segment_paths:
-                f.write(f"file '{p.resolve()}'\n")
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            list_path,
-            "-c",
-            "copy",
-            str(output_path),
-        ]
-        logger.info("Running: %s", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
-    finally:
-        os.unlink(list_path)
-    return output_path
-
-
-def crossfade_segments(
-    seg_a: Path,
-    seg_b: Path,
-    output_path: Path,
-    fade_ms: int = 10,
-) -> Path:
-    fade_s = fade_ms / 1000.0
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(seg_a),
-        "-i",
-        str(seg_b),
-        "-filter_complex",
-        f"acrossfade=d={fade_s}:c1=tri:c2=tri",
-        str(output_path),
-    ]
-    logger.info("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg crossfade failed: {result.stderr}")
     return output_path

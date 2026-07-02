@@ -10,7 +10,9 @@ from whispersync.cli import _build_parser
 def test_single_audio_file() -> None:
     args = _build_parser().parse_args(["--video-dir", "vids", "--audio-file", "rec.wav"])
     assert args.audio_files == [Path("rec.wav")]
-    assert args.strategy == 1
+    # strategy default is None at the parser level; main() applies
+    # config.default_strategy when the user didn't pass --strategy.
+    assert args.strategy is None
     assert args.recorder_mode is None  # default applied later via config
 
 

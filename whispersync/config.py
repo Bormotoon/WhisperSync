@@ -40,31 +40,10 @@ WHISPER_TEMPERATURE_LADDER = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 # Which source provides the audio sample-rate reference for FCPXML time values.
 TIMEBASE_SOURCES = ("camera", "recorder")
 
-# Word-matching backend. "legacy" = single difflib LCS (original). "dtw" = banded
-# DTW over word indices, robust to repeated takes on both sides (both camera and
-# recorder may contain re-takes/drafts; a single LCS can latch onto the wrong one).
-ALIGN_MODES = ("legacy", "dtw")
-
-# DTW (Tier 1) cost/band parameters. Band is a Sakoe-Chiba half-width in *word
-# indices* around a coarse diagonal; cost mixes token mismatch with a penalty for
-# straying off that diagonal (the slope term is what defeats wrong-take latching).
-DTW_BAND_MIN = 8
-DTW_BAND_MAX = 400
-DTW_BAND_MARGIN_FRAC = 1.0  # fraction of match_window_margin folded into the band
-DTW_TOKEN_WEIGHT = 1.0
-DTW_SLOPE_WEIGHT = 0.25
-DTW_SUBST_COST = 1.0
-DTW_GAP_COST = 0.6
-DTW_MIN_ANCHOR_CONF = 0.5
-
-# Acoustic refine (Tier 2, "Flex Time"): sample a grid across the clip, measure the
-# residual recorder↔camera lag by GCC-PHAT cross-correlation, and correct the
-# anchor times sub-sample. Off by default. Sharpness = peak/median(|cc|); measured
-# speech windows score 240–335 and silence/mismatch ≈12, so 50 is a safe gate.
-ACOUSTIC_GRID_S = 25.0
-ACOUSTIC_WINDOW_S = 7.0
+# GCC-PHAT cross-correlation parameters, shared by Boundary Flex (below).
+# Sharpness = peak/median(|cc|); measured speech windows score 240-335 and
+# silence/mismatch ~12.
 ACOUSTIC_MAX_LAG_S = 1.0
-ACOUSTIC_MIN_SHARPNESS = 50.0
 GCC_EPS = 1e-8
 
 # Boundary Flex: acoustically refine each rendered piece's recorder start time by
@@ -124,7 +103,13 @@ class WhisperSyncConfig:
     video_exts: list[str] = field(default_factory=lambda: list(DEFAULT_VIDEO_EXTS))
     audio_exts: list[str] = field(default_factory=lambda: list(DEFAULT_AUDIO_EXTS))
     fcpxml_version: str = "1.9"
-    default_strategy: int = 1
+    # Hybrid (3) is the recommended default out of the box — near-perfect
+    # alignment at roughly half the distortion of pure stretching. This is the
+    # single source of truth for the default strategy: CLI (--strategy) and GUI
+    # (the pre-checked radio) both read it instead of hard-coding their own
+    # value, which used to disagree (CLI defaulted to 1, GUI pre-checked 4).
+    # See PROJECT_ANALYSIS.md §4.4.
+    default_strategy: int = 3
     cache_dir: str | None = None
     output_dir: str | None = None
     use_cache: bool = True
@@ -176,27 +161,15 @@ class WhisperSyncConfig:
     match_window_margin: float = MATCH_WINDOW_MARGIN
     seed_max_occurrences: int = SEED_MAX_OCCURRENCES
     seed_bin_width: float = SEED_BIN_WIDTH
-    # Word-matching backend (see ALIGN_MODES). "legacy" preserves the original
-    # difflib behaviour; "dtw" uses the repeat-robust banded DTW in engine/dtw.py.
-    align_mode: str = "legacy"
-    dtw_band_min: int = DTW_BAND_MIN
-    dtw_band_max: int = DTW_BAND_MAX
-    dtw_band_margin_frac: float = DTW_BAND_MARGIN_FRAC
-    dtw_token_weight: float = DTW_TOKEN_WEIGHT
-    dtw_slope_weight: float = DTW_SLOPE_WEIGHT
-    dtw_subst_cost: float = DTW_SUBST_COST
-    dtw_gap_cost: float = DTW_GAP_COST
-    dtw_min_anchor_conf: float = DTW_MIN_ANCHOR_CONF
-    # Acoustic refine (Tier 2). Off by default; enriches anchor times via GCC-PHAT.
-    acoustic_refine: bool = False
-    acoustic_grid_s: float = ACOUSTIC_GRID_S
-    acoustic_window_s: float = ACOUSTIC_WINDOW_S
+    # GCC-PHAT cross-correlation parameters shared by Boundary Flex.
     acoustic_max_lag_s: float = ACOUSTIC_MAX_LAG_S
-    acoustic_min_sharpness: float = ACOUSTIC_MIN_SHARPNESS
     gcc_eps: float = GCC_EPS
-    # Boundary Flex (off by default): acoustically nudge each piece's recorder start
-    # so speech lands under the picture to sub-frame accuracy.
-    boundary_flex: bool = False
+    # Boundary Flex: acoustically nudge each piece's recorder start so speech
+    # lands under the picture to sub-frame accuracy. On by default — it's the
+    # best-out-of-the-box lip-sync setting (the GUI pre-checked this while the
+    # CLI defaulted it off; this is the single source of truth both now read).
+    # Costs a little extra processing; disable for the fastest run.
+    boundary_flex: bool = True
     flex_window_s: float = FLEX_WINDOW_S
     flex_min_sharpness: float = FLEX_MIN_SHARPNESS
     flex_deadband_s: float = FLEX_DEADBAND_S

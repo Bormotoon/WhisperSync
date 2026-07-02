@@ -30,7 +30,7 @@ from whispersync.engine.media import (
     probe,
 )
 from whispersync.engine.naming import natural_key
-from whispersync.engine.strategies import get_strategy
+from whispersync.engine.strategies import strategy_name
 from whispersync.engine.timestretch import (
     assemble_continuous,
     render_piece,
@@ -848,7 +848,6 @@ def run_pipeline(
         # position and silence filling the gaps — so the FCPXML carries ~2 clips
         # per video instead of thousands of segment clips.
         _notify("planning", 0.0, "Planning sync strategy...")
-        strategy = get_strategy(strategy_id)
         audio_synced_dir = output_path.parent / "audio_synced"
         audio_synced_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1012,10 +1011,9 @@ def run_pipeline(
         plan = SyncPlan(
             strategy_id=strategy_id,
             clips=all_clips,
-            audio_ops=[],
             total_duration=_timeline_end(all_clips),
         )
-        _notify("planning", 1.0, f"Strategy {strategy_id}: {strategy.name}")
+        _notify("planning", 1.0, f"Strategy {strategy_id}: {strategy_name(strategy_id)}")
 
         # Whisper is not needed past this point (rendering is pure ffmpeg, and
         # ambience extraction below runs its own GPU model in .sep-venv). Free
