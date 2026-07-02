@@ -21,7 +21,7 @@ def test_resolve_workers_explicit() -> None:
 def test_render_pieces_preserves_order(monkeypatch) -> None:
     # Stub the actual ffmpeg render: return a path encoding the index, so we can
     # assert the returned list is ordered by piece index regardless of scheduling.
-    def fake_render(input_path, output_dir, rec_start, rec_dur, factor, index, fade_ms):
+    def fake_render(input_path, output_dir, rec_start, rec_dur, factor, index, fade_ms, **kwargs):
         return Path(output_dir) / f"segment_{index:04d}.wav"
 
     monkeypatch.setattr(pipeline, "render_piece", fake_render)
@@ -33,3 +33,31 @@ def test_render_pieces_preserves_order(monkeypatch) -> None:
 
 def test_render_pieces_empty() -> None:
     assert pipeline.render_pieces([], Path("rec.wav"), Path("/tmp"), 10, workers=4) == []
+
+
+# --- _piece_seam_fades -------------------------------------------------------
+
+
+def test_seam_fades_contiguous_pieces_only_fade_clip_edges() -> None:
+    # clip_pieces' normal output: pieces tile the recorder span with no gaps.
+    # Interior seams are acoustically continuous and must NOT get a fade (a fade
+    # there would carve an audible dip into otherwise-continuous audio — see
+    # PROJECT_ANALYSIS.md §2.0); only the outer clip boundaries fade.
+    pieces = [(0.0, 1.0, 1.0), (1.0, 1.0, 1.0), (2.0, 1.0, 1.0)]
+    flags = pipeline._piece_seam_fades(pieces)
+    assert flags == [(True, False), (False, False), (False, True)]
+
+
+def test_seam_fades_discontinuity_fades_both_sides() -> None:
+    # After Boundary Flex nudges a boundary, a piece may no longer start exactly
+    # where its neighbour ended — that seam is now a real discontinuity and both
+    # sides must fade.
+    pieces = [(0.0, 1.0, 1.0), (1.08, 1.0, 1.0), (2.0, 1.0, 1.0)]
+    flags = pipeline._piece_seam_fades(pieces)
+    assert flags[0] == (True, True)  # piece 0's end no longer meets piece 1's start
+    assert flags[1] == (True, True)  # piece 1's start/end both discontinuous
+    assert flags[2] == (True, True)  # piece 2's start no longer meets piece 1's end
+
+
+def test_seam_fades_single_piece_fades_both_edges() -> None:
+    assert pipeline._piece_seam_fades([(0.0, 1.0, 1.0)]) == [(True, True)]

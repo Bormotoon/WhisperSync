@@ -4,7 +4,30 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from whispersync.engine.media import build_atempo_chain, path_to_file_uri
+from whispersync.engine.media import build_atempo_chain, path_to_file_uri, pcm_codec_for_bit_depth
+
+
+def test_pcm_codec_16bit_source() -> None:
+    assert pcm_codec_for_bit_depth(16) == "pcm_s16le"
+
+
+def test_pcm_codec_8bit_source_still_16bit_floor() -> None:
+    # Nothing below 16-bit is worth preserving as-is; floor at 16-bit PCM.
+    assert pcm_codec_for_bit_depth(8) == "pcm_s16le"
+
+
+def test_pcm_codec_24bit_source() -> None:
+    assert pcm_codec_for_bit_depth(24) == "pcm_s24le"
+
+
+def test_pcm_codec_32bit_source() -> None:
+    assert pcm_codec_for_bit_depth(32) == "pcm_s32le"
+
+
+def test_pcm_codec_unknown_depth_defaults_to_24bit() -> None:
+    # Unknown depth (e.g. a lossy source codec) defaults to 24-bit, which covers
+    # the vast majority of professional recorders without truncation.
+    assert pcm_codec_for_bit_depth(None) == "pcm_s24le"
 
 
 def test_path_to_file_uri() -> None:

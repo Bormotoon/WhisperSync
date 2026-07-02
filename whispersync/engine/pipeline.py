@@ -22,11 +22,16 @@ from whispersync.config import WhisperSyncConfig
 from whispersync.engine.acoustic import refine_piece_boundaries
 from whispersync.engine.export import generate_fcpxml, validate_fcpxml
 from whispersync.engine.matcher import align
-from whispersync.engine.media import MediaInfo, extract_audio_to_wav, probe
+from whispersync.engine.media import (
+    MediaInfo,
+    extract_audio_master,
+    extract_audio_to_wav,
+    pcm_codec_for_bit_depth,
+    probe,
+)
 from whispersync.engine.naming import natural_key
 from whispersync.engine.strategies import get_strategy
 from whispersync.engine.timestretch import (
-    apply_pause_ducking,
     assemble_continuous,
     render_piece,
 )
@@ -434,12 +439,41 @@ def _pool_context() -> Any:
         return mp.get_context()
 
 
+_SEAM_CONTIGUITY_TOL_S = 1e-3
+
+
+def _piece_seam_fades(pieces: list[tuple[float, float, float]]) -> list[tuple[bool, bool]]:
+    """Per-piece ``(fade_in, fade_out)`` flags from recorder-time contiguity.
+
+    Two consecutive pieces are acoustically continuous when the second's
+    ``rec_start`` picks up exactly where the first's ``rec_start + rec_dur``
+    left off — the usual case for ``clip_pieces``, since its breakpoints tile
+    the recorder span with no gaps. Only a genuine discontinuity (a piece that
+    doesn't start where its neighbour ended — e.g. after Boundary Flex nudges a
+    boundary) gets a fade on that edge, so the fade never carves an audible
+    dip into an otherwise-continuous recording. See PROJECT_ANALYSIS.md §2.0.
+    """
+    n = len(pieces)
+    flags: list[tuple[bool, bool]] = []
+    for i, (rs, rd, _factor) in enumerate(pieces):
+        prev_end = pieces[i - 1][0] + pieces[i - 1][1] if i > 0 else None
+        next_start = pieces[i + 1][0] if i + 1 < n else None
+        fade_in = prev_end is None or abs(rs - prev_end) > _SEAM_CONTIGUITY_TOL_S
+        fade_out = next_start is None or abs((rs + rd) - next_start) > _SEAM_CONTIGUITY_TOL_S
+        flags.append((fade_in, fade_out))
+    return flags
+
+
 def render_pieces(
     pieces: list[tuple[float, float, float]],
     rec_path: Path,
     tmp_dir: Path,
     fade_ms: int,
     workers: int,
+    sample_rate: int = 48000,
+    channels: int = 1,
+    codec: str = "pcm_s24le",
+    stretch_method: str = "auto",
 ) -> list[Path]:
     """Render every piece to its own indexed WAV, in parallel across ``workers``
     processes, and return the paths in piece order.
@@ -447,20 +481,55 @@ def render_pieces(
     Each piece is an independent CPU-bound ffmpeg call writing a distinct
     ``segment_{index}.wav`` (ffmpeg has no GPU audio filters, so spreading the work
     across cores is the real speed-up). The result is identical to a sequential run:
-    files are keyed by index and re-sorted before returning.
+    files are keyed by index and re-sorted before returning. Fades are applied only
+    on seams that are not acoustically contiguous (see ``_piece_seam_fades``).
     """
     if not pieces:
         return []
+    fades = _piece_seam_fades(pieces)
+    args = [
+        (rs, rd, fac, k, fi, fo)
+        for k, ((rs, rd, fac), (fi, fo)) in enumerate(zip(pieces, fades, strict=True))
+    ]
     if workers <= 1 or len(pieces) == 1:
         return [
-            render_piece(rec_path, tmp_dir, rs, rd, fac, k, fade_ms)
-            for k, (rs, rd, fac) in enumerate(pieces)
+            render_piece(
+                rec_path,
+                tmp_dir,
+                rs,
+                rd,
+                fac,
+                k,
+                fade_ms,
+                fade_in=fi,
+                fade_out=fo,
+                sample_rate=sample_rate,
+                channels=channels,
+                codec=codec,
+                stretch_method=stretch_method,
+            )
+            for rs, rd, fac, k, fi, fo in args
         ]
     results: dict[int, Path] = {}
     with ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context()) as pool:
         futures = {
-            pool.submit(render_piece, rec_path, tmp_dir, rs, rd, fac, k, fade_ms): k
-            for k, (rs, rd, fac) in enumerate(pieces)
+            pool.submit(
+                render_piece,
+                rec_path,
+                tmp_dir,
+                rs,
+                rd,
+                fac,
+                k,
+                fade_ms,
+                fade_in=fi,
+                fade_out=fo,
+                sample_rate=sample_rate,
+                channels=channels,
+                codec=codec,
+                stretch_method=stretch_method,
+            ): k
+            for rs, rd, fac, k, fi, fo in args
         }
         for fut in futures:
             k = futures[fut]
@@ -648,6 +717,35 @@ def run_pipeline(
         else:
             out_sr = 48000
 
+        # Render-path audio format (PROJECT_ANALYSIS.md §2.0): preserve each
+        # recorder's own channel count and a lossless PCM codec matching its bit
+        # depth, instead of collapsing everything to 16-bit mono. Channels/codec
+        # are picked per-recorder (a multi-recorder "all" setup may mix a mono lav
+        # and a stereo Zoom); pieces cut from recorder ``ri`` always use that
+        # recorder's own format so nothing is upmixed/downmixed along the way.
+        out_channels_by_rec = [max(1, info.audio_channels or 1) for info in rec_infos]
+        out_codec_by_rec = [
+            pcm_codec_for_bit_depth(info.audio_bits_per_sample) for info in rec_infos
+        ]
+
+        # Normalize each recorder to a lossless PCM master at the render's target
+        # sample rate once, up front. Cutting pieces directly from a lossy source
+        # (mp3/m4a) with -ss before -i is not sample-accurate (seek lands on a
+        # frame boundary), and re-decoding a lossy file on every cut compounds
+        # artifacts; cutting from an already-uncompressed, already-resampled
+        # master fixes both and makes every piece/lead-silence/concat operate on
+        # identical PCM (concat demuxer requires matching stream parameters).
+        master_dir = output_path.parent / "audio_synced" / ".master"
+        master_dir.mkdir(parents=True, exist_ok=True)
+        rec_master_paths: list[Path] = []
+        for ri, rp in enumerate(audio_files):
+            master_path = master_dir / f"{rp.stem}_master.wav"
+            extract_audio_master(
+                rp, master_path, out_sr, out_channels_by_rec[ri], out_codec_by_rec[ri]
+            )
+            rec_master_paths.append(master_path)
+            cleanup_paths.append(master_path)
+
         audio_clips: list[MediaClip] = []
         audio_speed: list[float] = []
         audio_track: list[str] = []
@@ -655,13 +753,15 @@ def run_pipeline(
         @dataclass
         class RenderJob:
             clip_idx: int
-            rec_path: Path
+            rec_path: Path  # lossless PCM master (see rec_master_paths above)
             lead: float
             pieces: list[tuple[float, float, float]]
             duration: float
             cam_audio: Path | None  # camera clip audio (mono 16k), for Boundary Flex
             rec_duration: float
             pauses: list[tuple[float, float]]  # local-time pause spans, for ducking
+            channels: int
+            codec: str
 
         render_jobs: list[RenderJob] = []
 
@@ -708,13 +808,15 @@ def run_pipeline(
             render_jobs.append(
                 RenderJob(
                     clip_idx=len(audio_clips) - 1,
-                    rec_path=audio_files[ri],
+                    rec_path=rec_master_paths[ri],
                     lead=lead,
                     pieces=pieces,
                     duration=vclip.duration,
                     cam_audio=cam_audio,
                     rec_duration=rec_infos[ri].duration,
                     pauses=pauses,
+                    channels=out_channels_by_rec[ri],
+                    codec=out_codec_by_rec[ri],
                 )
             )
 
@@ -797,26 +899,38 @@ def run_pipeline(
                     )
                 # Each piece is an independent ffmpeg cut/stretch; render them across
                 # the CPU pool (ffmpeg has no GPU audio filters). Order is preserved.
-                seg_paths = render_pieces(pieces, job.rec_path, tdp, fade_ms, workers)
+                # channels/codec match the source recorder — no forced mono/16-bit
+                # downgrade (PROJECT_ANALYSIS.md §2.0); fades apply only on seams
+                # that Boundary Flex actually made discontinuous.
+                seg_paths = render_pieces(
+                    pieces,
+                    job.rec_path,
+                    tdp,
+                    fade_ms,
+                    workers,
+                    sample_rate=out_sr,
+                    channels=job.channels,
+                    codec=job.codec,
+                    stretch_method=config.stretch_method,
+                )
                 # Name the output after the clip (e.g. "DJI_0832_voice.wav") so the
                 # media file matches its timeline clip; fall back to an index.
                 voice_name = audio_clips[clip_idx].display_name or f"synced_{clip_idx:03d}"
                 out = audio_synced_dir / f"{voice_name}.wav"
-                # Duck inter-phrase pauses (if enabled) on an intermediate file, then
-                # the ducked result becomes the final output.
-                if config.pause_duck_enabled and job.pauses:
-                    raw = tdp / f"raw_{clip_idx:03d}.wav"
-                    assemble_continuous(seg_paths, job.lead, job.duration, out_sr, raw)
-                    apply_pause_ducking(
-                        raw,
-                        out,
-                        job.pauses,
-                        config.pause_duck_db,
-                        config.pause_duck_fade_ms,
-                        out_sr,
-                    )
-                else:
-                    assemble_continuous(seg_paths, job.lead, job.duration, out_sr, out)
+                # Pause-ducking (if enabled) is folded into this same assembly pass
+                # instead of a second full decode/encode over an intermediate file.
+                assemble_continuous(
+                    seg_paths,
+                    job.lead,
+                    job.duration,
+                    out_sr,
+                    out,
+                    channels=job.channels,
+                    codec=job.codec,
+                    duck_pauses=job.pauses if config.pause_duck_enabled else None,
+                    duck_db=config.pause_duck_db,
+                    duck_fade_ms=config.pause_duck_fade_ms,
+                )
             audio_clips[clip_idx].path = out
             audio_clips[clip_idx].in_point = 0.0
             audio_status[clip_idx] = "done"

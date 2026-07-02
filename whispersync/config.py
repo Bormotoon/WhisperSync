@@ -138,8 +138,22 @@ class WhisperSyncConfig:
     recorder_mode: str = "best"
     # Short equal-power fades at audio segment seams to declick joints (mainly
     # for the Local Time-Stretch strategy). Length-preserving, so no extra drift.
+    # Only applied where a seam is not acoustically contiguous with its neighbour
+    # (see pipeline._piece_seam_fades) — a fade on every piece boundary would carve
+    # an audible volume dip into otherwise-continuous recorder audio.
     crossfade_enabled: bool = True
     crossfade_ms: int = 10
+    # Render-path audio quality (see PROJECT_ANALYSIS.md §2.0). "auto" preserves
+    # the recorder's channel count and a lossless PCM codec matching its bit depth
+    # end to end, instead of the old hard-coded 16-bit mono. Only "auto" is
+    # supported today; the field exists so a future explicit override is additive.
+    output_audio_format: str = "auto"
+    # Tempo-conform method for each rendered piece. "auto" uses a transparent
+    # resample ("varispeed") for small factors (|factor-1| <= a few tenths of a
+    # percent — real clock drift) and falls back to atempo (WSOLA) for larger
+    # corrections; "atempo"/"resample" force one method. See
+    # timestretch.RESAMPLE_CONFORM_MAX_DEVIATION.
+    stretch_method: str = "auto"
     # DISABLED BY DEFAULT: smoothing the per-piece atempo factors removes the
     # mid-word tempo-break stutter but redistributes each piece's output length, so
     # speech drifts off the picture (a parabolic error up to ~1.4s mid-clip). The

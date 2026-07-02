@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from fractions import Fraction
 from pathlib import Path
 
-from whispersync.engine.media import MediaInfo, path_to_file_uri
+from whispersync.engine.media import MediaInfo, path_to_file_uri, probe
 from whispersync.models import MediaClip, SyncPlan
 
 logger = logging.getLogger(__name__)
@@ -142,16 +142,28 @@ def generate_fcpxml(
                 "format": _format_for(cfps, cw, ch),
             }
         else:
+            # Report the rendered file's real channel count/rate (it now preserves
+            # the recorder's native channels — see PROJECT_ANALYSIS.md §2.0) rather
+            # than a hard-coded mono assumption; falls back to the sequence default
+            # if the file can't be probed (e.g. in unit tests with fake paths).
+            audio_channels = 1
+            audio_rate = sample_rate
+            try:
+                audio_info = probe(clip.path)
+                audio_channels = audio_info.audio_channels or 1
+                audio_rate = audio_info.audio_sample_rate or sample_rate
+            except (RuntimeError, OSError):
+                pass
             asset_attrs = {
                 "id": asset_id,
                 "name": asset_name,
                 "start": "0s",
-                "duration": to_rational(clip.duration + clip.in_point, sample_rate),
+                "duration": to_rational(clip.duration + clip.in_point, audio_rate),
                 "hasVideo": "0",
                 "hasAudio": "1",
                 "audioSources": "1",
-                "audioChannels": "1",
-                "audioRate": str(sample_rate),
+                "audioChannels": str(audio_channels),
+                "audioRate": str(audio_rate),
             }
 
         asset_el = ET.SubElement(resources, "asset", asset_attrs)

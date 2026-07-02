@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from whispersync.engine.media import build_atempo_chain
-from whispersync.engine.timestretch import edge_fade_filters
+from whispersync.engine.timestretch import (
+    RESAMPLE_CONFORM_MAX_DEVIATION,
+    duck_filter_chain,
+    edge_fade_filters,
+    seam_fade_filters,
+)
 
 
 def _eval_chain(chain: list[str]) -> float:
@@ -77,6 +82,123 @@ def test_edge_fade_clamped_to_half_segment() -> None:
     assert len(filters) == 2
     in_dur = float(filters[0].split("d=")[1])
     assert in_dur <= 0.05 + 1e-9
+
+
+# --- seam_fade_filters -------------------------------------------------------
+
+
+def test_seam_fade_filters_both_edges() -> None:
+    filters = seam_fade_filters(2.0, 10, fade_in=True, fade_out=True)
+    assert len(filters) == 2
+    assert filters[0].startswith("afade=t=in:")
+    assert filters[1].startswith("afade=t=out:")
+
+
+def test_seam_fade_filters_in_only() -> None:
+    filters = seam_fade_filters(2.0, 10, fade_in=True, fade_out=False)
+    assert len(filters) == 1
+    assert filters[0].startswith("afade=t=in:")
+
+
+def test_seam_fade_filters_out_only() -> None:
+    filters = seam_fade_filters(2.0, 10, fade_in=False, fade_out=True)
+    assert len(filters) == 1
+    assert filters[0].startswith("afade=t=out:")
+
+
+def test_seam_fade_filters_neither_edge_is_a_noop() -> None:
+    # A contiguous interior seam needs no fade at all — this is what stops the
+    # per-seam volume dip described in PROJECT_ANALYSIS.md §2.0.
+    assert seam_fade_filters(2.0, 10, fade_in=False, fade_out=False) == []
+
+
+def test_seam_fade_filters_disabled_when_zero() -> None:
+    assert seam_fade_filters(10.0, 0, True, True) == []
+
+
+# --- duck_filter_chain --------------------------------------------------------
+
+
+def test_duck_filter_chain_none_when_no_spans() -> None:
+    assert duck_filter_chain([], -18.0, 80) is None
+
+
+def test_duck_filter_chain_none_when_disabled() -> None:
+    assert duck_filter_chain([(1.0, 2.0)], 0.0, 80) is None
+
+
+def test_duck_filter_chain_builds_volume_expr() -> None:
+    chain = duck_filter_chain([(1.0, 2.0)], -18.0, 80)
+    assert chain is not None
+    assert chain.startswith("volume=volume=")
+
+
+# --- RESAMPLE_CONFORM_MAX_DEVIATION -------------------------------------------
+
+
+def test_resample_conform_threshold_covers_typical_clock_drift() -> None:
+    # Real camera/recorder clock drift is well under 1%; the resample-conform
+    # threshold must cover it so atempo/WSOLA artifacts are avoided for the
+    # common case (PROJECT_ANALYSIS.md §2.0).
+    assert RESAMPLE_CONFORM_MAX_DEVIATION >= 0.003
+
+
+# --- render_piece stretch-method routing --------------------------------------
+
+
+def test_render_piece_routes_small_factor_to_resample(monkeypatch) -> None:
+    from pathlib import Path
+
+    from whispersync.engine import timestretch
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        timestretch,
+        "resample_conform_segment",
+        lambda *a, **k: calls.append("resample") or Path("out.wav"),
+    )
+    monkeypatch.setattr(
+        timestretch, "apply_atempo_segment", lambda *a, **k: calls.append("atempo") or Path("x")
+    )
+    timestretch.render_piece(
+        Path("in.wav"), Path("."), 0.0, 1.0, 1.002, 0, fade_ms=10, stretch_method="auto"
+    )
+    assert calls == ["resample"]
+
+
+def test_render_piece_routes_large_factor_to_atempo(monkeypatch) -> None:
+    from pathlib import Path
+
+    from whispersync.engine import timestretch
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        timestretch,
+        "resample_conform_segment",
+        lambda *a, **k: calls.append("resample") or Path("x"),
+    )
+    monkeypatch.setattr(
+        timestretch,
+        "apply_atempo_segment",
+        lambda *a, **k: calls.append("atempo") or Path("out.wav"),
+    )
+    timestretch.render_piece(
+        Path("in.wav"), Path("."), 0.0, 1.0, 1.3, 0, fade_ms=10, stretch_method="auto"
+    )
+    assert calls == ["atempo"]
+
+
+def test_render_piece_unchanged_factor_is_a_plain_cut(monkeypatch) -> None:
+    from pathlib import Path
+
+    from whispersync.engine import timestretch
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        timestretch, "extract_segment", lambda *a, **k: calls.append("cut") or Path("out.wav")
+    )
+    timestretch.render_piece(Path("in.wav"), Path("."), 0.0, 1.0, 1.0, 0, fade_ms=10)
+    assert calls == ["cut"]
 
 
 def test_atempo_segment_filter_locks_exact_length() -> None:
