@@ -10,7 +10,6 @@ import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from urllib.parse import quote
 
 
 @dataclass
@@ -262,9 +261,15 @@ def pcm_codec_for_bit_depth(bits_per_sample: int | None) -> str:
 
 
 def path_to_file_uri(path: Path) -> str:
-    absolute = path.resolve()
-    encoded = quote(str(absolute), safe="/:")
-    return f"file://{encoded}"
+    """A ``file://`` URI for ``path``, percent-encoded and platform-correct.
+
+    ``Path.as_uri()`` handles this properly cross-platform — notably on
+    Windows, where a hand-rolled ``f"file://{quote(str(path))}"`` would encode
+    backslashes as ``%5C`` instead of converting them to the forward slashes a
+    URI requires, producing a URI FCPXML/other tools can't resolve. See
+    PROJECT_ANALYSIS.md §3.1.
+    """
+    return path.resolve().as_uri()
 
 
 def build_atempo_chain(factor: float) -> list[str]:

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from platformdirs import user_cache_dir, user_config_dir
+
+logger = logging.getLogger(__name__)
 
 APP_NAME = "whispersync"
 
@@ -229,7 +232,19 @@ class WhisperSyncConfig:
     def from_file(cls, path: Path) -> WhisperSyncConfig:
         with open(path) as f:
             data = json.load(f)
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        # Silently dropping unknown keys used to hide typos (e.g. a config
+        # written with "pause_duck_dB" instead of "pause_duck_db" would just
+        # never take effect, with no indication why). Warn about anything that
+        # isn't a real field. See PROJECT_ANALYSIS.md §2.9.
+        known = cls.__dataclass_fields__
+        unknown = sorted(set(data) - set(known))
+        if unknown:
+            logger.warning(
+                "Unknown config key(s) in %s (ignored — check for typos): %s",
+                path,
+                ", ".join(unknown),
+            )
+        return cls(**{k: v for k, v in data.items() if k in known})
 
     def merge_cli_args(self, **kwargs: object) -> None:
         for key, value in kwargs.items():
@@ -238,7 +253,9 @@ class WhisperSyncConfig:
 
 
 def load_config(config_path: Path | None = None, **cli_overrides: object) -> WhisperSyncConfig:
-    if config_path and config_path.exists():
+    if config_path is not None:
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
         cfg = WhisperSyncConfig.from_file(config_path)
     else:
         cfg = WhisperSyncConfig()

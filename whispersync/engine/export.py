@@ -6,6 +6,7 @@ import logging
 import xml.etree.ElementTree as ET
 from fractions import Fraction
 from pathlib import Path
+from urllib.parse import quote
 
 from whispersync.engine.media import MediaInfo, path_to_file_uri, probe
 from whispersync.models import MediaClip, SyncPlan
@@ -27,7 +28,13 @@ def _media_src(path: Path, base_dir: Path) -> str:
     videos) keeps an absolute ``file://`` URL.
     """
     try:
-        return str(path.resolve().relative_to(base_dir))
+        rel = path.resolve().relative_to(base_dir)
+        # Percent-encode each path component (a clip name with spaces or
+        # parentheses — e.g. "My Clip (2)_voice.wav" — must be encoded here
+        # exactly as the absolute-URL branch already is; an un-encoded relative
+        # src is not a well-formed URI reference and some FCPXML consumers
+        # reject it). "/" stays a separator, never encoded within a component.
+        return "/".join(quote(part, safe="") for part in rel.parts)
     except ValueError:
         return path_to_file_uri(path)
 

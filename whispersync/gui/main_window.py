@@ -13,9 +13,10 @@ from PyQt6.QtCore import (
     Qt,
     QThread,
     QtMsgType,
+    QUrl,
     qInstallMessageHandler,
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -493,10 +494,11 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Sync Error", msg)
 
     def _open_output_folder(self) -> None:
+        # QDesktopServices.openUrl is the cross-platform way to reveal a folder
+        # (xdg-open only exists on Linux; Windows/macOS need explorer/open) — see
+        # PROJECT_ANALYSIS.md §3.1.
         if hasattr(self, "_output_path"):
-            import subprocess
-
-            subprocess.Popen(["xdg-open", str(self._output_path)])
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._output_path)))
 
     def _restore_state(self) -> None:
         last_video = self.settings.value("last_video_dir", "")

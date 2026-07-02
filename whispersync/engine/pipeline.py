@@ -122,15 +122,21 @@ class CameraGroup:
     clips: list[MediaClip]
 
 
-def scan_cameras(video_dir: Path, config: WhisperSyncConfig) -> list[CameraGroup]:
+def scan_cameras(video_dir: Path, config: WhisperSyncConfig) -> tuple[list[CameraGroup], list[str]]:
     """Discover cameras and probe their clips.
 
     If ``video_dir`` contains sub-folders with video files, each sub-folder is
     treated as a separate camera placed on its own positive lane (1, 2, 3, …).
     Otherwise the flat folder is a single camera on lane 1. Clip offsets are
     left at 0 — real timeline positions come later from matched timecodes.
+
+    Returns ``(cameras, warnings)``. When camera sub-folders exist, video files
+    left directly in ``video_dir`` are ignored (only sub-folder contents become
+    cameras) — a warning names them so this doesn't silently drop footage the
+    user expected to be included. See PROJECT_ANALYSIS.md §2.8.
     """
     exts = tuple(config.video_exts)
+    warnings: list[str] = []
 
     def videos_in(d: Path) -> list[Path]:
         return sorted(
@@ -145,6 +151,13 @@ def scan_cameras(video_dir: Path, config: WhisperSyncConfig) -> list[CameraGroup
     sources: list[tuple[str, list[Path]]]
     if subdirs:
         sources = [(d.name, videos_in(d)) for d in subdirs]
+        root_files = videos_in(video_dir)
+        if root_files:
+            names = ", ".join(p.name for p in root_files)
+            warnings.append(
+                f"{len(root_files)} video file(s) in the root of --video-dir "
+                f"ignored because camera sub-folders exist: {names}"
+            )
     else:
         sources = [("camera", videos_in(video_dir))]
 
@@ -172,14 +185,14 @@ def scan_cameras(video_dir: Path, config: WhisperSyncConfig) -> list[CameraGroup
             )
         cameras.append(CameraGroup(name=name, lane=lane, infos=infos, clips=clips))
 
-    return cameras
+    return cameras, warnings
 
 
 def scan_video_clips(
     video_dir: Path, config: WhisperSyncConfig
 ) -> tuple[list[MediaInfo], list[MediaClip]]:
     """Flat view over all cameras (used by the dry-run path)."""
-    cameras = scan_cameras(video_dir, config)
+    cameras, _warnings = scan_cameras(video_dir, config)
     infos: list[MediaInfo] = []
     clips: list[MediaClip] = []
     for cam in cameras:
@@ -655,7 +668,8 @@ def run_pipeline(
     try:
         # --- scanning (group clips by camera) ---
         _notify("scanning", 0.0, "Scanning video directory...")
-        cameras = scan_cameras(video_dir, config)
+        cameras, scan_warnings = scan_cameras(video_dir, config)
+        warnings.extend(scan_warnings)
         video_clips: list[MediaClip] = []
         video_infos: list[MediaInfo] = []
         clip_camera: list[int] = []  # camera index per clip
@@ -724,6 +738,28 @@ def run_pipeline(
         n = len(video_clips)
         for idx, clip in enumerate(video_clips):
             video_status[idx] = "working"
+            # A clip with no audio track (timelapse, silent b-roll) has nothing to
+            # transcribe/align — extract_audio_to_wav would raise and abort the
+            # whole run. Skip straight to "placed by order" for this one clip
+            # instead. See PROJECT_ANALYSIS.md §3.4.
+            if video_infos[idx].audio_codec is None:
+                _notify(
+                    "transcribing_camera",
+                    idx / max(n, 1),
+                    f"Skipping {clip.path.name} (no audio track)",
+                    clips=_video_snapshot(),
+                )
+                warnings.append(f"{clip.path.name}: no audio track — placed by order")
+                video_status[idx] = "pending"
+                aligns.append([None] * len(rec_transcripts))
+                # Keep clip_transcripts index-aligned with video_clips even though
+                # this clip has nothing to transcribe — _add_job (below) never
+                # dereferences it for an unaligned clip, but the list must stay
+                # positionally correct for clips after this one.
+                clip_transcripts.append(
+                    Transcript(source_path=clip.path, language="", duration=0.0, segments=[])
+                )
+                continue
             _notify(
                 "transcribing_camera",
                 idx / max(n, 1),
@@ -980,6 +1016,15 @@ def run_pipeline(
             total_duration=_timeline_end(all_clips),
         )
         _notify("planning", 1.0, f"Strategy {strategy_id}: {strategy.name}")
+
+        # Whisper is not needed past this point (rendering is pure ffmpeg, and
+        # ambience extraction below runs its own GPU model in .sep-venv). Free
+        # its VRAM now rather than in the `finally` block at the very end —
+        # holding it through rendering/ambience is a common cause of GPU OOM on
+        # cards with 8-12 GB VRAM. See PROJECT_ANALYSIS.md §6.1.
+        if engine is not None:
+            engine.unload()
+            engine = None
 
         # --- render one continuous synced WAV per clip ---
         _notify("processing", 0.0, "Rendering synced audio...")

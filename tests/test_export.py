@@ -271,6 +271,45 @@ def test_display_names_and_roles(tmp_path: Path) -> None:
     assert "DJI_0830_voice" in asset_names and "DJI_0830_ambience" in asset_names
 
 
+def test_relative_media_src_is_percent_encoded(tmp_path: Path) -> None:
+    # A rendered audio file living next to the FCPXML (relative src branch) must
+    # be percent-encoded exactly like the absolute file:// branch — an
+    # un-encoded space/parenthesis in a relative src is not a well-formed URI
+    # reference. See PROJECT_ANALYSIS.md §3.2.
+    audio_dir = tmp_path / "audio_synced"
+    audio_dir.mkdir()
+    weird_name = "My Clip (2)_voice.wav"
+    (audio_dir / weird_name).write_bytes(b"")
+
+    clips = [
+        MediaClip(
+            path=Path("/v/a.mov"),
+            kind="video",
+            offset=0.0,
+            in_point=0.0,
+            duration=5.0,
+            lane=1,
+        ),
+        MediaClip(
+            path=audio_dir / weird_name,
+            kind="audio",
+            offset=0.0,
+            in_point=0.0,
+            duration=5.0,
+            lane=-1,
+        ),
+    ]
+    plan = SyncPlan(strategy_id=1, clips=clips, audio_ops=[], total_duration=5.0)
+    out = tmp_path / "encoded.fcpxml"
+    generate_fcpxml(plan, [_vinfo("/v/a.mov", 5.0)], out, audio_sample_rate=48000)
+
+    media_reps = ET.parse(out).getroot().findall(".//media-rep")
+    srcs = [m.get("src") for m in media_reps]
+    audio_src = next(s for s in srcs if s and "voice" in s)
+    assert " " not in audio_src and "(" not in audio_src
+    assert audio_src == "audio_synced/My%20Clip%20%282%29_voice.wav"
+
+
 def test_no_role_omits_attribute(tmp_path: Path) -> None:
     clips = [
         MediaClip(

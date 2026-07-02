@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from whispersync import __version__
 from whispersync.config import WhisperSyncConfig, load_config
 from whispersync.engine.pipeline import PipelineProgress, run_pipeline
 from whispersync.logging_setup import setup_logging
@@ -17,10 +18,20 @@ try:
     from rich.console import Console
 
     _console: Console | None = Console()
+    _console_err: Console | None = Console(stderr=True)
 except ImportError:
     _console = None
+    _console_err = None
 
 logger = logging.getLogger("whispersync.cli")
+
+# Exit codes: distinguish "the invocation itself was wrong" (usage/arguments)
+# from "the invocation was fine but the run failed" (alignment/environment/
+# ffmpeg), so scripts calling whispersync can react differently. See
+# PROJECT_ANALYSIS.md §7.12.
+EXIT_OK = 0
+EXIT_RUN_FAILED = 1
+EXIT_USAGE_ERROR = 2
 
 
 # ---------------------------------------------------------------------------
@@ -28,17 +39,30 @@ logger = logging.getLogger("whispersync.cli")
 # ---------------------------------------------------------------------------
 
 
-def _print(msg: str) -> None:
+def _print(msg: str, *, to_stderr: bool = False) -> None:
+    """Print a human-readable message. With --json, EVERYTHING except the
+    final JSON report goes to stderr, so `whispersync ... --json | jq` gets a
+    clean stdout stream instead of progress lines interleaved with the report.
+    See PROJECT_ANALYSIS.md §7.9."""
+    if to_stderr:
+        if _console_err is not None:
+            _console_err.print(msg, highlight=False)
+        else:
+            print(msg, file=sys.stderr, flush=True)
+        return
     if _console is not None:
         _console.print(msg, highlight=False)
     else:
         print(msg, flush=True)
 
 
-def _progress_printer(p: PipelineProgress) -> None:
-    pct = int(p.progress * 100)
-    msg = p.message or p.stage
-    _print(f"  [{p.stage:<25s}] {pct:3d}%  {msg}")
+def _progress_printer(json_output: bool) -> Any:
+    def _emit(p: PipelineProgress) -> None:
+        pct = int(p.progress * 100)
+        msg = p.message or p.stage
+        _print(f"  [{p.stage:<25s}] {pct:3d}%  {msg}", to_stderr=json_output)
+
+    return _emit
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +81,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--video-dir", required=True, type=Path, help="Path to folder with video files"
     )
@@ -294,12 +319,12 @@ def main() -> None:
     setup_logging(level=logging.DEBUG if args.verbose else logging.INFO)
 
     if not args.video_dir.is_dir():
-        _print(f"Error: {args.video_dir} is not a directory")
-        sys.exit(1)
+        _print(f"Error: {args.video_dir} is not a directory", to_stderr=args.json_output)
+        sys.exit(EXIT_USAGE_ERROR)
     for af in args.audio_files:
         if not af.is_file():
-            _print(f"Error: {af} is not a file")
-            sys.exit(1)
+            _print(f"Error: {af} is not a file", to_stderr=args.json_output)
+            sys.exit(EXIT_USAGE_ERROR)
 
     if args.strategy == 4:
         # Old strategy 3 ("Silence Padding") was merged into Hybrid (now id 3) —
@@ -307,7 +332,8 @@ def main() -> None:
         # deprecated alias so existing scripts/configs don't break outright.
         _print(
             "Warning: --strategy 4 is deprecated; strategies 3 and 4 were merged "
-            "into a single Hybrid strategy (id 3). Using strategy 3."
+            "into a single Hybrid strategy (id 3). Using strategy 3.",
+            to_stderr=args.json_output,
         )
         args.strategy = 3
 
@@ -354,19 +380,27 @@ def main() -> None:
     if args.no_cache:
         overrides["use_cache"] = False
 
-    config = load_config(args.config, **overrides)
+    try:
+        config = load_config(args.config, **overrides)
+    except FileNotFoundError as exc:
+        _print(f"Error: {exc}", to_stderr=args.json_output)
+        sys.exit(EXIT_USAGE_ERROR)
 
     # Default the output next to the sources (the video folder), which usually
     # lives on a volume with room — unlike the repo's working directory.
     output_path = args.output or (args.video_dir / "sync_output.fcpxml")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _print("WhisperSync — Starting synchronization")
-    _print(f"  Video dir:   {args.video_dir}")
-    _print(f"  Audio files: {', '.join(str(a) for a in args.audio_files)}")
-    _print(f"  Strategy:    {args.strategy}")
-    _print(f"  Output:      {output_path}")
-    _print("")
+    _print("WhisperSync — Starting synchronization", to_stderr=args.json_output)
+    _print(f"  Video dir:   {args.video_dir}", to_stderr=args.json_output)
+    _print(
+        f"  Audio files: {', '.join(str(a) for a in args.audio_files)}", to_stderr=args.json_output
+    )
+    _print(f"  Strategy:    {args.strategy}", to_stderr=args.json_output)
+    _print(f"  Output:      {output_path}", to_stderr=args.json_output)
+    _print("", to_stderr=args.json_output)
+
+    progress_callback = _progress_printer(args.json_output)
 
     try:
         if args.dry_run:
@@ -374,7 +408,7 @@ def main() -> None:
                 config=config,
                 video_dir=args.video_dir,
                 audio_files=args.audio_files,
-                progress_callback=_progress_printer,
+                progress_callback=progress_callback,
             )
             if args.json_output:
                 report = {
@@ -395,7 +429,7 @@ def main() -> None:
                 audio_files=args.audio_files,
                 strategy_id=args.strategy,
                 output_path=output_path,
-                progress_callback=_progress_printer,
+                progress_callback=progress_callback,
             )
             if args.json_output:
                 report = {
@@ -411,14 +445,14 @@ def main() -> None:
                 _print_sync_result(result)
 
     except Exception as exc:
-        _print(f"\nError: {exc}")
+        _print(f"\nError: {exc}", to_stderr=args.json_output)
         if args.verbose:
             import traceback
 
-            traceback.print_exc()
-        sys.exit(1)
+            traceback.print_exc(file=sys.stderr if args.json_output else sys.stdout)
+        sys.exit(EXIT_RUN_FAILED)
 
-    sys.exit(0)
+    sys.exit(EXIT_OK)
 
 
 if __name__ == "__main__":

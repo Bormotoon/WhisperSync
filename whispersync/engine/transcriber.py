@@ -217,7 +217,15 @@ class WhisperEngine:
         audio_path: Path,
         progress_callback: Callable[[float], None] | None = None,
     ) -> Transcript:
-        key = self._cache_key(audio_path, self.config)
+        # Cache lookup uses the RESOLVED device/compute_type (self._device /
+        # self._compute_type, resolved in __init__ from config.device/
+        # compute_type — cheap, no model load), not config.compute_type
+        # verbatim, which is often the literal string "auto". Two runs on
+        # different hardware that both had compute_type="auto" used to collide
+        # on the same cache key despite producing different transcripts. This
+        # lookup intentionally happens BEFORE _ensure_model() so a cache hit
+        # still avoids loading the model at all. See PROJECT_ANALYSIS.md §2.7.
+        key = self._cache_key(audio_path, self.config, self._device, self._compute_type)
         cache_file = self._cache_path(self.config.resolved_cache_dir, key)
         if self.config.use_cache:
             cached = self._load_cache(cache_file)
@@ -259,11 +267,19 @@ class WhisperEngine:
             segments=segments,
         )
         if self.config.use_cache:
-            self._save_cache(cache_file, transcript)
+            # Re-derive the key in case an in-flight OOM fallback changed
+            # device/compute_type after the lookup above, so the saved cache
+            # entry is keyed by what actually produced this transcript.
+            final_key = self._cache_key(audio_path, self.config, self._device, self._compute_type)
+            self._save_cache(
+                self._cache_path(self.config.resolved_cache_dir, final_key), transcript
+            )
         return transcript
 
     @staticmethod
-    def _cache_key(audio_path: Path, config: WhisperSyncConfig) -> str:
+    def _cache_key(
+        audio_path: Path, config: WhisperSyncConfig, device: str, compute_type: str
+    ) -> str:
         stat = audio_path.stat()
         parts = "|".join(
             [
@@ -271,7 +287,8 @@ class WhisperEngine:
                 str(stat.st_size),
                 str(stat.st_mtime),
                 config.model,
-                config.compute_type,
+                device,
+                compute_type,
                 config.language or "",
                 str(config.vad_filter),
                 # decoding params that change the transcript

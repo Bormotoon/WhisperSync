@@ -158,11 +158,12 @@ def test_scan_cameras_flat_dir_is_single_camera(tmp_path, monkeypatch) -> None: 
     (tmp_path / "a.mp4").touch()
     (tmp_path / "b.mp4").touch()
 
-    cams = scan_cameras(tmp_path, WhisperSyncConfig())
+    cams, warns = scan_cameras(tmp_path, WhisperSyncConfig())
     assert len(cams) == 1
     assert cams[0].lane == 1
     assert len(cams[0].clips) == 2
     assert all(c.lane == 1 for c in cams[0].clips)
+    assert warns == []
 
 
 def test_scan_cameras_subfolders_become_separate_lanes(
@@ -175,12 +176,27 @@ def test_scan_cameras_subfolders_become_separate_lanes(
     (tmp_path / "camA" / "a2.mp4").touch()
     (tmp_path / "camB" / "b1.mp4").touch()
 
-    cams = scan_cameras(tmp_path, WhisperSyncConfig())
+    cams, warns = scan_cameras(tmp_path, WhisperSyncConfig())
     assert [c.name for c in cams] == ["camA", "camB"]
     assert cams[0].lane == 1 and cams[1].lane == 2
     assert len(cams[0].clips) == 2 and len(cams[1].clips) == 1
     assert all(c.lane == 1 for c in cams[0].clips)
     assert all(c.lane == 2 for c in cams[1].clips)
+    assert warns == []
+
+
+def test_scan_cameras_warns_about_ignored_root_files(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    # Camera sub-folders exist AND there's a stray video file in the root —
+    # that file is silently excluded from the run unless we warn about it.
+    monkeypatch.setattr("whispersync.engine.pipeline.probe", _fake_probe)
+    (tmp_path / "camA").mkdir()
+    (tmp_path / "camA" / "a1.mp4").touch()
+    (tmp_path / "stray.mp4").touch()
+
+    cams, warns = scan_cameras(tmp_path, WhisperSyncConfig())
+    assert [c.name for c in cams] == ["camA"]
+    assert len(warns) == 1
+    assert "stray.mp4" in warns[0]
 
 
 def test_scan_cameras_empty_dir_raises(tmp_path, monkeypatch) -> None:  # noqa: ANN001
