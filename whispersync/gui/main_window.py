@@ -198,11 +198,23 @@ class MainWindow(QMainWindow):
         # own lane (needs the separate .sep-venv environment). Off by default.
         self.ambience_check = QCheckBox("Add camera-ambience track (no doubled voice)")
         self.ambience_check.setChecked(self.config.ambience_track)
-        self.ambience_check.setToolTip(
-            "Run AI source separation on the camera audio to remove its own (echoey) "
-            "voice while keeping the ambience, on a separate lane. Requires the "
-            "'.sep-venv' environment (setup_sep_venv.sh)."
-        )
+        # Disabled with an explanatory tooltip when .sep-venv isn't set up,
+        # instead of letting the user enable it and only finding out via a
+        # warning at the end of a run. See PROJECT_ANALYSIS.md §7.4.
+        from whispersync.engine import separation
+
+        repo_root = Path(__file__).resolve().parents[2]
+        if separation.is_available(repo_root):
+            self.ambience_check.setToolTip(
+                "Run AI source separation on the camera audio to remove its own (echoey) "
+                "voice while keeping the ambience, on a separate lane."
+            )
+        else:
+            self.ambience_check.setEnabled(False)
+            self.ambience_check.setToolTip(
+                "Requires the '.sep-venv' environment, which is not set up. "
+                "Run setup_sep_venv.sh to enable this feature."
+            )
         options_layout.addRow(self.ambience_check)
 
         left_layout.addWidget(options_group)
@@ -495,6 +507,13 @@ class MainWindow(QMainWindow):
             self.btn_open_folder.setEnabled(True)
             self._output_path = result.fcpxml_path.parent
             # The timeline is kept live via the worker's `timeline` signal.
+
+            # Pipeline warnings (unaligned clips, high residual, strategy
+            # advice, FCPXML validation failures, ...) previously only reached
+            # the user via the CLI printout — the GUI silently dropped them.
+            # See PROJECT_ANALYSIS.md §7.6.
+            for warning in result.warnings:
+                self.log_view.append_log(warning, "WARNING")
 
         self.log_view.append_log("Sync complete!", "INFO")
         self.status_bar.showMessage("Sync complete!")
