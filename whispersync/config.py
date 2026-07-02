@@ -178,9 +178,25 @@ class WhisperSyncConfig:
     match_window_margin: float = MATCH_WINDOW_MARGIN
     seed_max_occurrences: int = SEED_MAX_OCCURRENCES
     seed_bin_width: float = SEED_BIN_WIDTH
-    # GCC-PHAT cross-correlation parameters shared by Boundary Flex.
+    # GCC-PHAT cross-correlation parameters shared by Boundary Flex and the
+    # acoustic fallback below.
     acoustic_max_lag_s: float = ACOUSTIC_MAX_LAG_S
     gcc_eps: float = GCC_EPS
+    # Acoustic fallback ("Strategy 0"): when a clip can't be aligned to any
+    # recorder via the transcript (too little transcribable speech — music,
+    # background noise, a language Whisper garbles, near-silence), fall back
+    # to a coarse GCC-PHAT cross-correlation grid scan across the whole
+    # recorder span to estimate offset/K directly from the waveforms. Turns
+    # "no usable words" from a hard failure into a still-working (if less
+    # precise) placement, as long as the same physical audio event reaches
+    # both the camera and the recorder mic. On by default; the anchors list
+    # is empty for a fallback match, so clip_pieces uses one global tempo
+    # conform for that clip regardless of the chosen strategy. See
+    # PROJECT_ANALYSIS.md §10.2.
+    acoustic_fallback: bool = True
+    acoustic_fallback_grid_s: float = 30.0
+    acoustic_fallback_window_s: float = 8.0
+    acoustic_fallback_min_sharpness: float = 50.0
     # Boundary Flex: acoustically nudge each piece's recorder start so speech
     # lands under the picture to sub-frame accuracy. On by default — it's the
     # best-out-of-the-box lip-sync setting (the GUI pre-checked this while the

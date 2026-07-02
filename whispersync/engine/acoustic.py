@@ -136,6 +136,78 @@ def gcc_phat(
     return lag_samples / sr, sharpness
 
 
+def acoustic_coarse_align(
+    cam_audio_wav: Path,
+    rec_audio_path: Path,
+    clip_duration: float,
+    rec_duration: float,
+    grid_s: float = 30.0,
+    window_s: float = 8.0,
+    max_lag_s: float = 1.0,
+    min_sharpness: float = 50.0,
+    gcc_eps: float = 1e-8,
+) -> tuple[float, float] | None:
+    """Acoustic fallback offset/K estimate when there's no usable transcript
+    match (too little speech, music, a foreign language Whisper garbles, or
+    near-silence) — the alignment paths in ``matcher.py`` all fail without at
+    least a couple of matched words. This works directly on the waveforms,
+    exactly like Boundary Flex, but coarsely: cross-correlate a window of the
+    camera's own audio against the recorder at each point on a grid across
+    the WHOLE recorder span (assuming the clip could start anywhere in it),
+    then fit an ``offset, K`` line through the confident (sharp-peak) points
+    the same way ``ransac_linear_fit`` does for text anchors.
+
+    Returns ``(offset, k)`` such that ``t_cam = offset + k * t_rec``, or
+    ``None`` if too few grid points were confident to fit a line. This is
+    the "Strategy 0" acoustic fallback (see PROJECT_ANALYSIS.md §10.2): it
+    turns WhisperSync from "works when there's transcribable speech" into
+    "works on anything with correlated audio between the two tracks" —
+    music, ambient noise, or a language Whisper can't transcribe well, as
+    long as the same physical event reaches both mics.
+    """
+    cam_track = load_mono16k_track(cam_audio_wav)
+    rec_track = load_mono16k_track(rec_audio_path)
+
+    half = window_s / 2.0
+    points: list[tuple[float, float]] = []  # (cam_time, rec_time) of confident matches
+    t_cam = half
+    while t_cam <= clip_duration - half:
+        t_rec = half
+        best_sharp = 0.0
+        best_rec_time: float | None = None
+        while t_rec <= rec_duration - half:
+            cam_win = _window_slice(cam_track, t_cam, window_s, _REFINE_SR)
+            rec_win = _window_slice(rec_track, t_rec, window_s, _REFINE_SR)
+            # ref=camera window (fixed content), query=recorder window: a
+            # sharp peak means these two windows' content actually matches.
+            # Same convention as acoustic._measure_boundary (Boundary Flex):
+            # the true recorder time for this camera moment is the probed
+            # window center corrected by -lag_s.
+            lag_s, sharp = gcc_phat(cam_win, rec_win, _REFINE_SR, max_lag_s, gcc_eps)
+            if sharp > best_sharp:
+                best_sharp, best_rec_time = sharp, t_rec - lag_s
+            t_rec += grid_s
+        if best_rec_time is not None and best_sharp >= min_sharpness:
+            points.append((t_cam, best_rec_time))
+        t_cam += grid_s
+
+    if len(points) < 2:
+        logger.info("Acoustic coarse align: only %d confident point(s), giving up", len(points))
+        return None
+
+    cam_times = np.array([p[0] for p in points])
+    rec_times = np.array([p[1] for p in points])
+    coeffs = np.polyfit(rec_times, cam_times, 1)
+    k, offset = float(coeffs[0]), float(coeffs[1])
+    logger.info(
+        "Acoustic coarse align: offset=%.3fs k=%.6f from %d confident point(s)",
+        offset,
+        k,
+        len(points),
+    )
+    return offset, k
+
+
 # (rec_start, rec_in_duration, atempo_factor) — the piece tuple produced by clip_pieces.
 Piece = tuple[float, float, float]
 

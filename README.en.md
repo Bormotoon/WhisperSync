@@ -80,6 +80,13 @@ Source media is never modified.
   compute-type) and **full transcript export** (JSON + SRT)
 - **RANSAC regression** with a two-stage outlier filter for robust drift
   estimation even with mismatched anchors
+- **Auto-strategy** — recommends a better-suited strategy from the drift
+  characteristics when the one you picked isn't the best fit
+- **Acoustic fallback** — a clip with no usable transcript match at all
+  (music, heavy noise, a language Whisper garbles) falls back to a coarse
+  waveform cross-correlation, no words required
+- **Per-camera lip-sync calibration** — a constant mic-to-lips offset that no
+  acoustic method can see, correctable per camera
 - **NVIDIA GPU** acceleration (CUDA/cuDNN) with CPU fallback
 - **Cross-platform** — Windows, macOS, Linux
 
@@ -268,6 +275,7 @@ silently doing nothing, and a missing `--config` path is a hard error. Example:
     "min_anchors": 8,
     "anchor_min_confidence": 0.6,
     "boundary_flex": true,
+    "acoustic_fallback": true,
     "pause_duck_enabled": false,
     "ambience_track": false
 }
@@ -283,7 +291,12 @@ silently doing nothing, and a missing `--config` path is a hard error. Example:
   `brew install ffmpeg` / download from ffmpeg.org (Windows).
 - **Few anchors** — ensure both tracks contain audible speech; try
   `--language`, lower `anchor_min_confidence`, or a larger model. A clip below
-  `min_anchors` falls back to filename-order placement with a warning.
+  `min_anchors` falls back to filename-order placement with a warning. A clip
+  with NO usable transcript match at all (music, heavy noise, a language
+  Whisper garbles) automatically falls back to `acoustic_fallback` — a coarse
+  GCC-PHAT cross-correlation scan across the whole recorder, directly on the
+  waveforms, no words required. Less precise than text anchors, but turns a
+  hard failure into a still-working (if rougher) placement.
 - **High residual** — try Strategy 2 (non-linear drift); verify anchors are
   spread across the whole length.
 - **Reset cache** — `rm -rf ~/.cache/whispersync/` or run with `--no-cache`.

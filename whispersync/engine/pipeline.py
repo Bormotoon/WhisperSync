@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from whispersync.config import WhisperSyncConfig
-from whispersync.engine.acoustic import refine_piece_boundaries
+from whispersync.engine.acoustic import acoustic_coarse_align, refine_piece_boundaries
 from whispersync.engine.export import generate_fcpxml, validate_fcpxml
 from whispersync.engine.matcher import (
     align,
@@ -657,6 +657,44 @@ def _anchor_count(am: AlignmentMap | None) -> int:
     return len(am.anchors) if am is not None else 0
 
 
+def _try_acoustic_fallback(
+    clip_audio: Path,
+    clip_duration: float,
+    rec_path: Path,
+    rec_duration: float,
+    config: WhisperSyncConfig,
+) -> AlignmentMap | None:
+    """Acoustic fallback ("Strategy 0") for a clip the transcript couldn't
+    align to this recorder: estimate offset/K directly from the waveforms via
+    a coarse GCC-PHAT grid scan. Returns an ``AlignmentMap`` with an empty
+    anchor list on success (so ``clip_pieces`` falls back to one global tempo
+    conform for this clip, regardless of the chosen strategy — there are no
+    text breakpoints to build a piecewise warp from), or ``None`` if even the
+    acoustic scan found no confident match. See PROJECT_ANALYSIS.md §10.2.
+
+    ``clip_audio`` is the 16kHz mono WAV already extracted for transcription
+    (reused here instead of re-extracting, same as Boundary Flex's cam_audio).
+    """
+    try:
+        result = acoustic_coarse_align(
+            clip_audio,
+            rec_path,
+            clip_duration=clip_duration,
+            rec_duration=rec_duration,
+            grid_s=config.acoustic_fallback_grid_s,
+            window_s=config.acoustic_fallback_window_s,
+            max_lag_s=config.acoustic_max_lag_s,
+            min_sharpness=config.acoustic_fallback_min_sharpness,
+            gcc_eps=config.gcc_eps,
+        )
+    except (RuntimeError, ValueError, OSError):
+        return None
+    if result is None:
+        return None
+    offset, k = result
+    return AlignmentMap(anchors=[], offset=offset, k=k, residual_ms=0.0)
+
+
 def run_pipeline(
     config: WhisperSyncConfig,
     video_dir: Path,
@@ -831,7 +869,24 @@ def run_pipeline(
                     row.append(None)
             video_status[idx] = "pending"
             if all(a is None for a in row):
-                warnings.append(f"{clip.path.name}: not aligned to any recorder")
+                if config.acoustic_fallback:
+                    row = [
+                        _try_acoustic_fallback(
+                            clip_audio,
+                            video_infos[idx].duration,
+                            audio_files[ri],
+                            rec_infos[ri].duration,
+                            config,
+                        )
+                        for ri in range(len(audio_files))
+                    ]
+                if all(a is None for a in row):
+                    warnings.append(f"{clip.path.name}: not aligned to any recorder")
+                elif config.acoustic_fallback:
+                    warnings.append(
+                        f"{clip.path.name}: no usable transcript match — used acoustic "
+                        "fallback (coarse waveform cross-correlation) instead"
+                    )
             aligns.append(row)
 
         # --- pick the primary recorder (most total anchors) for placement ---
