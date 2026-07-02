@@ -15,12 +15,14 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from whispersync.engine.media import probe
 from whispersync.engine.timestretch import (
     assemble_continuous,
     extract_segment,
+    mix_clips_on_timeline,
     render_piece,
     resample_conform_segment,
 )
@@ -226,3 +228,80 @@ def test_resample_conform_pitch_shift_is_within_the_small_drift_budget(
     )
     info = probe(out)
     assert abs(info.duration - 4.0 / 1.002) < 0.01
+
+
+@pytest.fixture
+def two_short_clips(tmp_path: Path) -> tuple[Path, Path]:
+    clip_a = tmp_path / "clip_a.wav"
+    clip_b = tmp_path / "clip_b.wav"
+    for path, freq, dur in ((clip_a, 440, 2.0), (clip_b, 880, 1.5)):
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency={freq}:duration={dur}",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-acodec",
+            "pcm_s24le",
+            str(path),
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+    return clip_a, clip_b
+
+
+def test_mix_clips_on_timeline_places_clips_at_their_offsets_and_pads_length(
+    two_short_clips: tuple[Path, Path], tmp_path: Path
+) -> None:
+    clip_a, clip_b = two_short_clips
+    out = tmp_path / "master.wav"
+    mix_clips_on_timeline(
+        [(clip_a, 0.0), (clip_b, 3.0)],
+        total_duration=5.0,
+        sample_rate=48000,
+        output_path=out,
+        channels=2,
+        codec="pcm_s24le",
+    )
+    info = probe(out)
+    assert info.audio_channels == 2
+    assert info.audio_bits_per_sample == 24
+    assert abs(info.duration - 5.0) < 0.01
+
+    def rms(start: float, dur: float) -> float:
+        cmd = [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            str(start),
+            "-t",
+            str(dur),
+            "-i",
+            str(out),
+            "-f",
+            "f32le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-",
+        ]
+        raw = subprocess.run(cmd, check=True, capture_output=True).stdout
+        samples = np.frombuffer(raw, dtype=np.float32)
+        return float(np.sqrt((samples**2).mean())) if samples.size else 0.0
+
+    assert rms(0.5, 0.5) > 0.01  # clip_a is playing
+    assert rms(3.5, 0.5) > 0.01  # clip_b is playing at its offset
+    assert rms(4.7, 0.2) < 1e-4  # past clip_b's end (4.5s) -> silence
+
+
+def test_mix_clips_on_timeline_empty_clip_list_is_silence(tmp_path: Path) -> None:
+    out = tmp_path / "master.wav"
+    mix_clips_on_timeline([], total_duration=2.0, sample_rate=48000, output_path=out)
+    info = probe(out)
+    assert abs(info.duration - 2.0) < 0.01

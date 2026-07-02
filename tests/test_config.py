@@ -22,6 +22,15 @@ def test_load_config_no_path_uses_defaults() -> None:
     assert cfg == WhisperSyncConfig()
 
 
+def test_render_master_wav_defaults_off() -> None:
+    assert WhisperSyncConfig().render_master_wav is False
+
+
+def test_render_master_wav_cli_override() -> None:
+    cfg = load_config(None, render_master_wav=True)
+    assert cfg.render_master_wav is True
+
+
 def test_load_config_reads_known_fields(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"model": "medium", "default_strategy": 2}))

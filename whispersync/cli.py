@@ -223,6 +223,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="After a successful run, measure realized lip-sync lag per clip via "
         "GCC-PHAT cross-correlation (see tools/verify_sync.py) and print a summary",
     )
+    parser.add_argument(
+        "--render-master-wav",
+        dest="render_master_wav",
+        action="store_true",
+        default=None,
+        help="Also render a single WAV spanning the whole timeline (every synced "
+        "voice clip, and ambience if enabled, mixed at their timeline offsets) "
+        "next to the FCPXML, for users without an NLE",
+    )
     parser.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
     return parser
@@ -372,6 +381,8 @@ def _print_sync_result(result: Any) -> None:
     _print(f"  Offset:     {result.alignment.offset:.4f} s")
     _print(f"  Residual:   {result.alignment.residual_ms:.1f} ms")
     _print(f"  Output:     {result.fcpxml_path}")
+    if result.master_wav_path is not None:
+        _print(f"  Master WAV: {result.master_wav_path}")
     if result.warnings:
         _print(f"  Warnings:   {', '.join(result.warnings)}")
 
@@ -436,6 +447,8 @@ def main() -> None:
         overrides["pause_duck_db"] = args.pause_duck_db
     if args.ambience_track is not None:
         overrides["ambience_track"] = args.ambience_track
+    if args.render_master_wav is not None:
+        overrides["render_master_wav"] = args.render_master_wav
 
     if args.no_cache:
         overrides["use_cache"] = False
@@ -513,6 +526,9 @@ def main() -> None:
                     "anchors": result.anchors_used,
                     "residual_ms": result.alignment.residual_ms,
                     "fcpxml_path": str(result.fcpxml_path),
+                    "master_wav_path": (
+                        str(result.master_wav_path) if result.master_wav_path else None
+                    ),
                     "warnings": result.warnings,
                 }
                 if verify_reports is not None:

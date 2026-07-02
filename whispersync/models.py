@@ -77,3 +77,4 @@ class SyncResult:
     plan: SyncPlan
     anchors_used: int
     warnings: list[str]
+    master_wav_path: Path | None = None

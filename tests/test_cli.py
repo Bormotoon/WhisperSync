@@ -91,3 +91,12 @@ def test_camera_av_offset_flag() -> None:
         ["--video-dir", "v", "--audio-file", "r.wav", "--camera-av-offset-ms", "-12.5"]
     )
     assert args.camera_av_offset_ms == -12.5
+
+
+def test_render_master_wav_flag_defaults_off() -> None:
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav"])
+    assert args.render_master_wav is None
+    args = _build_parser().parse_args(
+        ["--video-dir", "v", "--audio-file", "r.wav", "--render-master-wav"]
+    )
+    assert args.render_master_wav is True

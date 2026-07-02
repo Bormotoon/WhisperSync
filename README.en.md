@@ -201,6 +201,8 @@ Key flags: `--strategy {1,2,3}` (default: `WhisperSyncConfig.default_strategy`,
 `--recorder-mode {best,all}`, `--crossfade/--no-crossfade`, `--render-workers`,
 `--boundary-flex/--no-boundary-flex` (on by default), `--pause-duck/
 --no-pause-duck`, `--pause-duck-db`, `--ambience-track`,
+`--render-master-wav` (also render one WAV spanning the whole timeline, voice +
+ambience mixed at their timeline offsets, for users without an NLE),
 `--save-transcripts/--no-save-transcripts`, `--config`, `--no-cache`,
 `--dry-run`, `--verify` (post-render lip-sync self-check, see
 `tools/verify_sync.py`), `--json`, `--verbose`, `--version`. Run
@@ -277,7 +279,8 @@ silently doing nothing, and a missing `--config` path is a hard error. Example:
     "boundary_flex": true,
     "acoustic_fallback": true,
     "pause_duck_enabled": false,
-    "ambience_track": false
+    "ambience_track": false,
+    "render_master_wav": false
 }
 ```
 

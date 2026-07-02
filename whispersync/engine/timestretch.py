@@ -527,3 +527,70 @@ def assemble_continuous(
         if lead_path is not None:
             lead_path.unlink(missing_ok=True)
     return output_path
+
+
+def mix_clips_on_timeline(
+    clips: list[tuple[Path, float]],
+    total_duration: float,
+    sample_rate: int,
+    output_path: Path,
+    channels: int = _DEFAULT_CHANNELS,
+    codec: str = _DEFAULT_CODEC,
+) -> Path:
+    """Mix already-rendered audio clips (path, timeline-offset-seconds) onto one
+    continuous WAV spanning ``total_duration``, each delayed to its own offset
+    over a silent bed — a single master track for users without an NLE.
+
+    Every clip is resampled/upmixed to ``sample_rate``/``channels`` via
+    ``aresample`` + ``aformat`` before mixing (they may come from different
+    recorders with different native formats); ``amix`` sums without
+    normalizing volume (``normalize=0``) so overlapping clips don't get
+    quieter than a non-overlapping single clip would.
+    """
+    if not clips or total_duration <= 0:
+        return generate_silence(output_path, max(total_duration, 0.0), sample_rate, channels, codec)
+
+    layout = "mono" if channels == 1 else "stereo" if channels == 2 else f"{channels}c"
+    inputs: list[str] = []
+    filter_parts: list[str] = []
+    mix_labels: list[str] = []
+    for i, (path, offset) in enumerate(clips):
+        inputs += ["-i", str(path)]
+        delay_ms = max(0, round(offset * 1000))
+        delay_arg = "|".join([str(delay_ms)] * channels) if channels > 1 else str(delay_ms)
+        filter_parts.append(
+            f"[{i}:a]aresample={sample_rate}:resampler=soxr,"
+            f"aformat=sample_fmts=fltp:channel_layouts={layout},"
+            f"adelay={delay_arg}:all=1[a{i}]"
+        )
+        mix_labels.append(f"[a{i}]")
+    filter_parts.append(
+        f"{''.join(mix_labels)}amix=inputs={len(clips)}:duration=longest:normalize=0,"
+        f"apad,atrim=0:{total_duration:.6f},asetpts=PTS-STARTPTS[out]"
+    )
+    filter_complex = ";".join(filter_parts)
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        *inputs,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[out]",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        str(channels),
+        "-acodec",
+        codec,
+        str(output_path),
+    ]
+    logger.info("Mixing %d clip(s) onto master timeline -> %s", len(clips), output_path)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if result.returncode != 0 and ":resampler=soxr" in filter_complex:
+        cmd[cmd.index("-filter_complex") + 1] = filter_complex.replace(":resampler=soxr", "")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg master-timeline mix failed: {result.stderr[-800:]}")
+    return output_path

@@ -38,6 +38,7 @@ from whispersync.engine.naming import natural_key
 from whispersync.engine.strategies import strategy_name
 from whispersync.engine.timestretch import (
     assemble_continuous,
+    mix_clips_on_timeline,
     render_piece,
 )
 from whispersync.engine.transcriber import WhisperEngine
@@ -1299,6 +1300,31 @@ def run_pipeline(
                 plan.clips.extend(amb_clips)
                 plan.total_duration = _timeline_end(plan.clips)
 
+        # --- optional master WAV (single file spanning the whole timeline, for
+        # users without an NLE) ---
+        master_wav_path: Path | None = None
+        if config.render_master_wav:
+            _notify("processing", 0.0, "Rendering master WAV...")
+            audio_timeline_clips = [c for c in plan.clips if c.kind == "audio"]
+            if audio_timeline_clips:
+                master_wav_path = output_path.parent / f"{output_path.stem}_master.wav"
+                # Use the strongest recorder's channel/codec choice (same one
+                # picked for the primary synced-voice renders) as the master's
+                # own format; every input clip is itself already a lossless
+                # PCM render at out_sr, so this mix never re-touches bit depth.
+                master_channels = out_channels_by_rec[primary]
+                master_codec = out_codec_by_rec[primary]
+                mix_clips_on_timeline(
+                    [(c.path, c.offset) for c in audio_timeline_clips],
+                    plan.total_duration,
+                    out_sr,
+                    master_wav_path,
+                    channels=master_channels,
+                    codec=master_codec,
+                )
+            else:
+                warnings.append("render_master_wav requested but no synced audio clips to mix")
+
         # --- export ---
         _notify("exporting", 0.0, "Generating FCPXML...")
         generate_fcpxml(
@@ -1345,6 +1371,7 @@ def run_pipeline(
             plan=plan,
             anchors_used=anchors_used,
             warnings=warnings,
+            master_wav_path=master_wav_path,
         )
 
     except InterruptedError:

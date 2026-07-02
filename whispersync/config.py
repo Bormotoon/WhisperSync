@@ -217,6 +217,11 @@ class WhisperSyncConfig:
     # lane so the only voice is the clean synced one (no doubled/echoed voice).
     ambience_track: bool = False
     ambience_model: str = AMBIENCE_MODEL
+    # Render a single WAV spanning the whole timeline (every synced voice clip,
+    # and the ambience track if enabled, mixed at their timeline offsets over a
+    # silent bed) next to the FCPXML, for users without an NLE to drop the
+    # project into. Off by default (one extra full-length render).
+    render_master_wav: bool = False
 
     @property
     def resolved_cache_dir(self) -> Path:
