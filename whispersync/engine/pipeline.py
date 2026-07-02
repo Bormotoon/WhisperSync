@@ -573,6 +573,7 @@ def render_pieces(
     channels: int = 1,
     codec: str = "pcm_s24le",
     stretch_method: str = "auto",
+    cancel_event: Any = None,
 ) -> list[Path]:
     """Render every piece to its own indexed WAV, in parallel across ``workers``
     processes, and return the paths in piece order.
@@ -582,6 +583,14 @@ def render_pieces(
     across cores is the real speed-up). The result is identical to a sequential run:
     files are keyed by index and re-sorted before returning. Fades are applied only
     on seams that are not acoustically contiguous (see ``_piece_seam_fades``).
+
+    ``cancel_event`` (a ``threading.Event``), if given and set, raises
+    ``InterruptedError`` between pieces — a job with hundreds of pieces used to
+    only be cancellable between whole JOBS (i.e. clips), so cancelling mid-way
+    through one large clip could take as long as rendering the rest of it.
+    This doesn't kill an already-running ffmpeg subprocess, but it stops
+    starting new ones, which is the practical bulk of the wait. See
+    PROJECT_ANALYSIS.md §3.5.
     """
     if not pieces:
         return []
@@ -591,24 +600,28 @@ def render_pieces(
         for k, ((rs, rd, fac), (fi, fo)) in enumerate(zip(pieces, fades, strict=True))
     ]
     if workers <= 1 or len(pieces) == 1:
-        return [
-            render_piece(
-                rec_path,
-                tmp_dir,
-                rs,
-                rd,
-                fac,
-                k,
-                fade_ms,
-                fade_in=fi,
-                fade_out=fo,
-                sample_rate=sample_rate,
-                channels=channels,
-                codec=codec,
-                stretch_method=stretch_method,
+        results_seq: list[Path] = []
+        for rs, rd, fac, k, fi, fo in args:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Cancelled by user")
+            results_seq.append(
+                render_piece(
+                    rec_path,
+                    tmp_dir,
+                    rs,
+                    rd,
+                    fac,
+                    k,
+                    fade_ms,
+                    fade_in=fi,
+                    fade_out=fo,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    codec=codec,
+                    stretch_method=stretch_method,
+                )
             )
-            for rs, rd, fac, k, fi, fo in args
-        ]
+        return results_seq
     results: dict[int, Path] = {}
     with ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context()) as pool:
         futures = {
@@ -651,7 +664,18 @@ def run_pipeline(
     strategy_id: int,
     output_path: Path,
     progress_callback: ProgressCallback | None = None,
+    cancel_event: Any = None,
 ) -> SyncResult:
+    """Run the full sync pipeline.
+
+    ``cancel_event`` (a ``threading.Event``), if given, is checked between
+    render pieces within a job (see ``render_pieces``) in addition to the
+    existing between-job/stage cancellation that ``progress_callback``
+    raising ``InterruptedError`` already provides — a job with hundreds of
+    pieces was previously only cancellable once the WHOLE job finished. See
+    PROJECT_ANALYSIS.md §3.5.
+    """
+
     def _notify(
         stage: str,
         progress: float = 0.0,
@@ -1116,6 +1140,7 @@ def run_pipeline(
                     channels=job.channels,
                     codec=job.codec,
                     stretch_method=config.stretch_method,
+                    cancel_event=cancel_event,
                 )
                 # Name the output after the clip (e.g. "DJI_0832_voice.wav") so the
                 # media file matches its timeline clip; fall back to an index.

@@ -1,5 +1,6 @@
 """QObject-based worker for background pipeline execution."""
 
+import threading
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -72,10 +73,14 @@ class SyncWorker(QObject):
         self.audio_files = audio_files
         self.strategy_id = strategy_id
         self.output_path = output_path
-        self._cancelled = False
+        # A threading.Event (not a plain bool) so run_pipeline can poll it
+        # directly from inside a long render job — between individual ffmpeg
+        # pieces, not just between whole clips/stages. See
+        # PROJECT_ANALYSIS.md §3.5.
+        self._cancel_event = threading.Event()
 
     def _on_progress(self, p: PipelineProgress) -> None:
-        if self._cancelled:
+        if self._cancel_event.is_set():
             raise InterruptedError("Cancelled by user")
         self.stage.emit(p.stage)
         self.progress.emit(overall_progress(p.stage, p.progress))
@@ -94,6 +99,7 @@ class SyncWorker(QObject):
                 strategy_id=self.strategy_id,
                 output_path=self.output_path,
                 progress_callback=self._on_progress,
+                cancel_event=self._cancel_event,
             )
             self.finished.emit(result)
         except InterruptedError:
@@ -102,4 +108,4 @@ class SyncWorker(QObject):
             self.error.emit(str(e))
 
     def cancel(self) -> None:
-        self._cancelled = True
+        self._cancel_event.set()

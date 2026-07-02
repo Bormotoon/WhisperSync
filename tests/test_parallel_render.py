@@ -35,6 +35,42 @@ def test_render_pieces_empty() -> None:
     assert pipeline.render_pieces([], Path("rec.wav"), Path("/tmp"), 10, workers=4) == []
 
 
+def test_render_pieces_sequential_checks_cancel_between_pieces(monkeypatch) -> None:
+    import threading
+
+    calls = {"n": 0}
+
+    def fake_render(input_path, output_dir, rec_start, rec_dur, factor, index, fade_ms, **kwargs):
+        calls["n"] += 1
+        return Path(output_dir) / f"segment_{index:04d}.wav"
+
+    monkeypatch.setattr(pipeline, "render_piece", fake_render)
+    pieces = [(float(i), 1.0, 1.0) for i in range(10)]
+
+    # Already-cancelled event -> the very first piece must raise before
+    # rendering anything, not after finishing the whole job.
+    cancel_event = threading.Event()
+    cancel_event.set()
+    try:
+        pipeline.render_pieces(
+            pieces, Path("rec.wav"), Path("/tmp"), 10, workers=1, cancel_event=cancel_event
+        )
+        raise AssertionError("expected InterruptedError")
+    except InterruptedError:
+        pass
+    assert calls["n"] == 0
+
+
+def test_render_pieces_sequential_no_cancel_event_runs_to_completion(monkeypatch) -> None:
+    def fake_render(input_path, output_dir, rec_start, rec_dur, factor, index, fade_ms, **kwargs):
+        return Path(output_dir) / f"segment_{index:04d}.wav"
+
+    monkeypatch.setattr(pipeline, "render_piece", fake_render)
+    pieces = [(float(i), 1.0, 1.0) for i in range(5)]
+    out = pipeline.render_pieces(pieces, Path("rec.wav"), Path("/tmp"), 10, workers=1)
+    assert len(out) == 5
+
+
 # --- _piece_seam_fades -------------------------------------------------------
 
 
