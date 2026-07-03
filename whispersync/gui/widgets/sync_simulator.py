@@ -51,15 +51,13 @@ _ROW_H = 34
 _ROW_GAP = 14
 _TOP = 26
 
-_METHOD = {1: "Global linear", 2: "Local time-stretch", 3: "Silence padding", 4: "Hybrid"}
+_METHOD = {1: "Global linear", 2: "Local time-stretch", 3: "Hybrid"}
 _NOTE = {
     1: "One global atempo over the whole clip — no seams. Fully cancels drift "
     "only when the drift is linear; speech is gently sped up/slowed everywhere.",
     2: "Every phrase is time-stretched to fit its slot. Alignment is perfect, but "
     "the speech itself is stretched — audible on large drift.",
-    3: "Speech is never stretched (zero distortion); silence between phrases is "
-    "padded instead. Residual drift remains *inside* long phrases.",
-    4: "Stretch per phrase + padded gaps — near-perfect alignment with roughly "
+    3: "Stretch per phrase + padded gaps — near-perfect alignment with roughly "
     "half the distortion of pure stretching. The usual best choice.",
 }
 
@@ -80,10 +78,10 @@ class _SimModel:
 
     def speed_pct(self) -> float:
         """Tempo change applied to speech by the current strategy (0 == none)."""
-        if self.strategy == 3 or self.drift_ms == 0:
+        if self.drift_ms == 0:
             return 0.0
         # hybrid shares the correction with padding -> stretches roughly half
-        eff = self.drift_ms / 2.0 if self.strategy == 4 else float(self.drift_ms)
+        eff = self.drift_ms / 2.0 if self.strategy == 3 else float(self.drift_ms)
         speed = self.phrase_ms / (self.phrase_ms + eff)
         return (speed - 1.0) * 100.0
 
@@ -93,15 +91,26 @@ class _SimModel:
         s = self.strategy
         if s in (1, 2):
             return 100.0, min(d / 500.0, 1.0)
-        if s == 3:
-            acc = max(50.0, 100.0 - d * self.phrase_ms / 140000.0)
-            return acc, 0.0
         return 100.0, min(d / 1000.0, 1.0)  # hybrid: ~half the distortion
 
 
 def _fmt_time(seconds: float) -> str:
     seconds = max(0.0, seconds)
     return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
+
+
+# Same green→yellow→red drift language as the real timeline, driven here by the
+# tempo change the strategy applies (in %). ~1.5% ≈ full red.
+_DRIFT_FULL_PCT = 1.5
+
+
+def _drift_color(speed_pct: float) -> QColor:
+    t = min(abs(speed_pct) / _DRIFT_FULL_PCT, 1.0)
+    if t < 0.5:
+        u = t / 0.5
+        return QColor(int(62 + 162 * u), int(179 + 17 * u), int(80 - 16 * u))
+    u = (t - 0.5) / 0.5
+    return QColor(int(224 + 16 * u), int(196 - 111 * u), int(64 + 16 * u))
 
 
 class _SimCanvas(QWidget):
@@ -141,22 +150,20 @@ class _SimCanvas(QWidget):
             ref_w = max(3.0, self._x(rs + m.phrase_ms, total) - ref_x)
             self._block(p, ref_x, ref_y, ref_w, bh, QColor(_REF), "video")
 
-            # strategy 3 keeps the natural (un-stretched) width; others fit the slot
-            gw_ms = m.phrase_ms + m.drift_ms if m.strategy == 3 else m.phrase_ms
             g_x = self._x(rs, total)
-            g_end = self._x(rs + gw_ms, total)
+            g_end = self._x(rs + m.phrase_ms, total)
             g_w = max(3.0, g_end - g_x)
-            self._block(p, g_x, rec_y, g_w, bh, QColor(_REC), "audio", badge=badge)
+            # Tint the synced phrase by the tempo correction, exactly like the real
+            # timeline: green when barely touched, red when heavily stretched.
+            rec_color = _drift_color(pct)
+            self._block(p, g_x, rec_y, g_w, bh, rec_color, "audio", badge=badge)
 
-            # padding bars (strategies 3 & 4 adjust the silence between phrases)
-            if m.strategy in (3, 4) and i < _N_PHRASES - 1:
+            # padding bars: strategy 3 (Hybrid) also adjusts the silence between
+            # phrases to absorb the residual after each phrase's own stretch.
+            if m.strategy == 3 and i < _N_PHRASES - 1:
                 next_x = self._x((i + 1) * (m.phrase_ms + _GAP_MS), total)
                 if next_x - g_end > 5:
                     self._padding(p, g_end, rec_y, next_x - g_end, bh)
-
-            # strategy-3 residual: phrase end no longer lines up with the picture
-            if m.strategy == 3 and m.drift_ms != 0:
-                self._residual(p, self._x(rs + m.phrase_ms, total), g_end, rec_y, bh)
 
         if m.strategy == 1 and m.drift_ms != 0:
             p.setPen(QColor(_ACCENT))
@@ -214,16 +221,6 @@ class _SimCanvas(QWidget):
             p.setFont(f)
             p.drawText(int(x), int(y), int(w), int(h), Qt.AlignmentFlag.AlignCenter, "pad")
 
-    def _residual(self, p: QPainter, ref_end: float, green_end: float, y: float, h: float) -> None:
-        lo, hi = sorted((ref_end, green_end))
-        if hi - lo < 2:
-            return
-        c = QColor(_ACCENT)
-        c.setAlpha(120)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(c))
-        p.drawRect(int(lo), int(y), int(hi - lo), int(h))
-
     def _paint_ruler(self, p: QPainter, total: float) -> None:
         y = _TOP
         area_r = self.width() - _MARGIN_R
@@ -280,7 +277,8 @@ class _SimCanvas(QWidget):
         x = _MARGIN_L
         for color, label in (
             (_REF, "Reference"),
-            (_REC, "Recorder"),
+            (_GOOD, "In sync"),
+            (_BAD, "Heavy correction"),
             (_PAD, "Padding"),
             (_ACCENT, "Stretched / residual"),
         ):

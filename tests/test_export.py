@@ -60,7 +60,6 @@ def test_generate_and_validate_fcpxml(tmp_path: Path) -> None:
                 lane=-1,
             ),
         ],
-        audio_ops=[{"type": "atempo", "factor": 0.999}],
         total_duration=60.0,
     )
 
@@ -78,15 +77,19 @@ def test_generate_and_validate_fcpxml(tmp_path: Path) -> None:
     spine = root.find(".//spine")
     assert spine is not None
 
-    gap = spine.find("gap")
-    assert gap is not None
+    # New layout: the video clip is the primary-storyline element (directly in the
+    # spine, no lane), and the audio is a connected clip nested under it on lane -1.
+    spine_video = spine.findall("asset-clip")
+    assert len(spine_video) == 1, "the video clip should sit directly in the spine"
+    video_clip = spine_video[0]
+    assert video_clip.get("lane") is None, "primary-storyline clip carries no lane"
 
-    clips = gap.findall("asset-clip")
-    assert len(clips) == 2
+    connected = video_clip.findall("asset-clip")
+    assert len(connected) == 1, "the audio should be connected to the video clip"
+    assert connected[0].get("lane") == "-1"
 
-    lanes = {c.get("lane") for c in clips}
-    assert "1" in lanes
-    assert "-1" in lanes
+    # the audio's offset is relative to the parent's start (2s here)
+    clips = [video_clip, connected[0]]
 
     # every asset-clip must reference a declared asset
     asset_ids = {a.get("id") for a in root.findall(".//asset")}
@@ -120,7 +123,6 @@ def test_fcpxml_roundtrip_times(tmp_path: Path) -> None:
             MediaClip(Path("/v/a.mp4"), "video", 0.0, 0.0, 120.0, 1),
             MediaClip(Path("/a/r.wav"), "audio", 5.0, 0.0, 115.0, -1),
         ],
-        audio_ops=[],
         total_duration=120.0,
     )
 
@@ -153,7 +155,6 @@ def test_spine_times_are_frame_aligned(tmp_path: Path) -> None:
             MediaClip(Path("/v/DJI_0829.mp4"), "video", 2.9106329, 0.0, 60.04, 1),
             MediaClip(Path("/a/synced_000.wav"), "audio", 2.9106329, 0.0, 60.04, -1),
         ],
-        audio_ops=[],
         total_duration=62.95,
     )
     out = tmp_path / "fa.fcpxml"
@@ -189,7 +190,6 @@ def test_mixed_fps_and_relative_src(tmp_path: Path) -> None:
             MediaClip(Path("/v/B.mp4"), "video", 12.0, 0.0, 10.0, 2),
             MediaClip(synced, "audio", 0.0, 0.0, 10.0, -1),
         ],
-        audio_ops=[],
         total_duration=22.0,
     )
     out = tmp_path / "sync_output.fcpxml"
@@ -203,3 +203,124 @@ def test_mixed_fps_and_relative_src(tmp_path: Path) -> None:
     srcs = {a.get("name"): a.find("media-rep").get("src") for a in root.findall(".//asset")}
     assert srcs["synced_000"] == "audio_synced/synced_000.wav"
     assert srcs["A"].startswith("file://")
+
+
+def _vinfo(path: str, dur: float) -> MediaInfo:
+    return MediaInfo(
+        path=Path(path),
+        duration=dur,
+        fps=Fraction(30000, 1001),
+        width=1920,
+        height=1080,
+        video_codec="h264",
+        audio_codec="aac",
+        audio_channels=2,
+        audio_sample_rate=48000,
+    )
+
+
+def test_display_names_and_roles(tmp_path: Path) -> None:
+    clips = [
+        MediaClip(
+            path=Path("/v/DJI_0830.MOV"),
+            kind="video",
+            offset=0.0,
+            in_point=0.0,
+            duration=10.0,
+            lane=1,
+            role="Video",
+        ),
+        MediaClip(
+            path=Path("/a/synced_001.wav"),
+            kind="audio",
+            offset=0.0,
+            in_point=0.0,
+            duration=10.0,
+            lane=-1,
+            display_name="DJI_0830_voice",
+            role="Dialogue",
+        ),
+        MediaClip(
+            path=Path("/a/blah_(Instrumental)_melband.wav"),
+            kind="audio",
+            offset=0.0,
+            in_point=0.0,
+            duration=10.0,
+            lane=-2,
+            display_name="DJI_0830_ambience",
+            role="Effects",
+        ),
+    ]
+    plan = SyncPlan(strategy_id=3, clips=clips, total_duration=10.0)
+    out = tmp_path / "roles.fcpxml"
+    generate_fcpxml(plan, [_vinfo("/v/DJI_0830.MOV", 10.0)], out, audio_sample_rate=48000)
+    root = ET.parse(out).getroot()
+
+    by_name = {c.get("name"): c for c in root.findall(".//asset-clip")}
+    assert set(by_name) == {"DJI_0830", "DJI_0830_voice", "DJI_0830_ambience"}
+    # roles land on the right attribute (videoRole vs audioRole)
+    assert by_name["DJI_0830"].get("videoRole") == "Video"
+    assert by_name["DJI_0830_voice"].get("audioRole") == "Dialogue"
+    assert by_name["DJI_0830_ambience"].get("audioRole") == "Effects"
+    # friendly names also propagate to the <asset> entries
+    asset_names = {a.get("name") for a in root.findall(".//asset")}
+    assert "DJI_0830_voice" in asset_names and "DJI_0830_ambience" in asset_names
+
+
+def test_relative_media_src_is_percent_encoded(tmp_path: Path) -> None:
+    # A rendered audio file living next to the FCPXML (relative src branch) must
+    # be percent-encoded exactly like the absolute file:// branch — an
+    # un-encoded space/parenthesis in a relative src is not a well-formed URI
+    # reference. See PROJECT_ANALYSIS.md §3.2.
+    audio_dir = tmp_path / "audio_synced"
+    audio_dir.mkdir()
+    weird_name = "My Clip (2)_voice.wav"
+    (audio_dir / weird_name).write_bytes(b"")
+
+    clips = [
+        MediaClip(
+            path=Path("/v/a.mov"),
+            kind="video",
+            offset=0.0,
+            in_point=0.0,
+            duration=5.0,
+            lane=1,
+        ),
+        MediaClip(
+            path=audio_dir / weird_name,
+            kind="audio",
+            offset=0.0,
+            in_point=0.0,
+            duration=5.0,
+            lane=-1,
+        ),
+    ]
+    plan = SyncPlan(strategy_id=1, clips=clips, total_duration=5.0)
+    out = tmp_path / "encoded.fcpxml"
+    generate_fcpxml(plan, [_vinfo("/v/a.mov", 5.0)], out, audio_sample_rate=48000)
+
+    media_reps = ET.parse(out).getroot().findall(".//media-rep")
+    srcs = [m.get("src") for m in media_reps]
+    audio_src = next(s for s in srcs if s and "voice" in s)
+    assert " " not in audio_src and "(" not in audio_src
+    assert audio_src == "audio_synced/My%20Clip%20%282%29_voice.wav"
+
+
+def test_no_role_omits_attribute(tmp_path: Path) -> None:
+    clips = [
+        MediaClip(
+            path=Path("/v/a.mov"),
+            kind="video",
+            offset=0.0,
+            in_point=0.0,
+            duration=5.0,
+            lane=1,
+        )
+    ]
+    plan = SyncPlan(strategy_id=1, clips=clips, total_duration=5.0)
+    out = tmp_path / "norole.fcpxml"
+    generate_fcpxml(plan, [_vinfo("/v/a.mov", 5.0)], out)
+    clip = ET.parse(out).getroot().find(".//asset-clip")
+    assert clip is not None
+    assert clip.get("videoRole") is None and clip.get("audioRole") is None
+    assert clip.get("name") == "a"  # falls back to stem

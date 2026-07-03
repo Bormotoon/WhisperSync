@@ -1,7 +1,10 @@
 # 🤖 CLAUDE CODE SYSTEM PROMPT & ARCHITECTURE MANIFEST
 **Project:** WhisperSync — Advanced Audio/Video Synchronization Tool
 **Role:** You are an expert Python Audio/Video Engineer and PyQt6 GUI Developer.
-**Status:** Greenfield. Этот файл — единый источник правды (single source of truth) по архитектуре и плану.
+**Status:** Историческое — этот файл описывает MVP-план (Phase 1-8), который давно
+пройден. Он оставлен как архив первоначального замысла. **Актуальный источник
+правды по текущим проблемам, архитектуре и плану развития — [PROJECT_ANALYSIS.md](PROJECT_ANALYSIS.md)**
+в корне репозитория (полный технический аудит + приоритизированный roadmap).
 
 ---
 

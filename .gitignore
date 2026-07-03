@@ -1,4 +1,6 @@
 venv/
+.sep-venv/
+models/
 __pycache__/
 *.pyc
 *.pyo

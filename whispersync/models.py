@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 
 @dataclass
@@ -48,9 +48,6 @@ class AlignmentMap:
     k: float
     residual_ms: float
 
-    def rec_to_cam(self, t: float) -> float:
-        return self.offset + self.k * t
-
 
 @dataclass
 class MediaClip:
@@ -60,13 +57,16 @@ class MediaClip:
     in_point: float
     duration: float
     lane: int
+    # Optional FCPXML display name (falls back to the file stem) and FCPX role
+    # (e.g. "Dialogue", "Effects", "Video") so the editor colours/groups clips.
+    display_name: str | None = None
+    role: str | None = None
 
 
 @dataclass
 class SyncPlan:
     strategy_id: int
     clips: list[MediaClip]
-    audio_ops: list[dict[str, Any]]
     total_duration: float
 
 
@@ -77,3 +77,4 @@ class SyncResult:
     plan: SyncPlan
     anchors_used: int
     warnings: list[str]
+    master_wav_path: Path | None = None

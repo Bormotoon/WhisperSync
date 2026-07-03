@@ -1,11 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "whispersync"
 version = "0.1.0"
 description = "Advanced audio/video synchronization for dual-system sound via Whisper transcription, with FCPXML export"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
-authors = [{ name = "WhisperSync Contributors" }]
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Bormotoon" }]
 keywords = [
     "video",
     "audio",
@@ -21,7 +26,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: GPU :: NVIDIA CUDA",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
@@ -29,6 +33,13 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Multimedia :: Sound/Audio",
     "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "faster-whisper>=1.1.0",
+    "PyQt6>=6.7.0",
+    "numpy>=1.26.0",
+    "platformdirs>=4.0.0",
+    "rich>=13.0.0",
 ]
 
 [project.urls]
@@ -39,7 +50,10 @@ Changelog = "https://github.com/Bormotoon/WhisperSync/blob/main/CHANGELOG.md"
 
 [project.scripts]
 whispersync = "whispersync.cli:main"
-whispersync-gui = "main:main"
+whispersync-gui = "whispersync.app:main"
+
+[tool.setuptools.packages.find]
+include = ["whispersync*"]
 
 [tool.ruff]
 line-length = 100
@@ -73,3 +87,6 @@ disable_error_code = ["override", "union-attr"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: exercises real ffmpeg (slow-ish, no GPU needed); skip with -m 'not integration'",
+]

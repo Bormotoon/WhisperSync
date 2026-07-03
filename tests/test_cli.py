@@ -10,7 +10,9 @@ from whispersync.cli import _build_parser
 def test_single_audio_file() -> None:
     args = _build_parser().parse_args(["--video-dir", "vids", "--audio-file", "rec.wav"])
     assert args.audio_files == [Path("rec.wav")]
-    assert args.strategy == 1
+    # strategy default is None at the parser level; main() applies
+    # config.default_strategy when the user didn't pass --strategy.
+    assert args.strategy is None
     assert args.recorder_mode is None  # default applied later via config
 
 
@@ -34,7 +36,10 @@ def test_multiple_audio_files_accumulate() -> None:
     assert args.strategy == 4
 
 
-def test_strategy_choices_include_hybrid() -> None:
+def test_strategy_choices_include_deprecated_4_alias() -> None:
+    # 4 still parses (main() remaps it to 3 with a deprecation warning — see
+    # test below); the parser itself must keep accepting it so existing
+    # scripts/configs don't hard-fail.
     args = _build_parser().parse_args(
         ["--video-dir", "v", "--audio-file", "r.wav", "--strategy", "4"]
     )
@@ -55,6 +60,13 @@ def test_crossfade_toggle() -> None:
     assert args.crossfade_ms == 20
 
 
+def test_verify_flag_defaults_off() -> None:
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav"])
+    assert args.verify is False
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav", "--verify"])
+    assert args.verify is True
+
+
 def test_timebase_and_camera_flags() -> None:
     args = _build_parser().parse_args(
         [
@@ -70,3 +82,21 @@ def test_timebase_and_camera_flags() -> None:
     )
     assert args.timebase_source == "recorder"
     assert args.audio_source_camera == "camB"
+
+
+def test_camera_av_offset_flag() -> None:
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav"])
+    assert args.camera_av_offset_ms is None
+    args = _build_parser().parse_args(
+        ["--video-dir", "v", "--audio-file", "r.wav", "--camera-av-offset-ms", "-12.5"]
+    )
+    assert args.camera_av_offset_ms == -12.5
+
+
+def test_render_master_wav_flag_defaults_off() -> None:
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav"])
+    assert args.render_master_wav is None
+    args = _build_parser().parse_args(
+        ["--video-dir", "v", "--audio-file", "r.wav", "--render-master-wav"]
+    )
+    assert args.render_master_wav is True

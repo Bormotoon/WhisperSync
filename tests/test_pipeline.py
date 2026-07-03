@@ -9,9 +9,11 @@ import pytest
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.pipeline import (
     CameraGroup,
+    _snap_to_word_gap,
     clip_pieces,
     compute_master_offsets,
     make_timeline_entries,
+    recorder_word_gaps,
     scan_cameras,
 )
 from whispersync.models import AlignmentMap, Anchor, MediaClip
@@ -35,6 +37,67 @@ def test_clip_pieces_tracks_nonlinear_drift() -> None:
     # strategy 1 is a single global stretch
     _, global_pieces = clip_pieces(am, 12.0, 20.0, strategy_id=1, config=cfg)
     assert len(global_pieces) == 1
+
+
+def test_recorder_word_gaps_finds_silence_midpoints() -> None:
+    # word A: [1.0, 1.5], word B: [2.0, 2.5] -> silence [1.5, 2.0], midpoint 1.75
+    gaps = recorder_word_gaps([(1.0, 1.5), (2.0, 2.5)])
+    assert gaps == [1.75]
+
+
+def test_recorder_word_gaps_ignores_touching_or_overlapping_words() -> None:
+    gaps = recorder_word_gaps([(1.0, 2.0), (2.0, 3.0), (2.9, 3.5)])
+    assert gaps == []
+
+
+def test_snap_to_word_gap_within_range() -> None:
+    assert _snap_to_word_gap(10.3, [10.5], max_snap_s=0.4) == 10.5
+
+
+def test_snap_to_word_gap_too_far_is_unchanged() -> None:
+    assert _snap_to_word_gap(10.0, [10.5], max_snap_s=0.4) == 10.0
+
+
+def test_snap_to_word_gap_no_gaps_is_unchanged() -> None:
+    assert _snap_to_word_gap(10.0, [], max_snap_s=0.4) == 10.0
+
+
+def test_clip_pieces_seam_snap_moves_breakpoint_to_nearest_gap() -> None:
+    # A single interior anchor at rec_time=5.0, with a recorder word-gap
+    # midpoint at 5.3 (within the default snap window) — the piece boundary
+    # should land on the gap, not exactly on the anchor (avoids a mid-word cut).
+    anchors = [
+        Anchor(cam_time=5.0, rec_time=5.0, token="w1", confidence=0.9),
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
+    cfg = WhisperSyncConfig()
+
+    _, pieces_unsnapped = clip_pieces(
+        am, clip_duration=10.0, rec_duration=20.0, strategy_id=2, config=cfg
+    )
+    _, pieces_snapped = clip_pieces(
+        am,
+        clip_duration=10.0,
+        rec_duration=20.0,
+        strategy_id=2,
+        config=cfg,
+        rec_word_gaps=[5.3],
+    )
+    # unsnapped: the second piece starts exactly at the anchor (5.0)
+    assert abs(pieces_unsnapped[1][0] - 5.0) < 1e-9
+    # snapped: the second piece starts at the nearby word gap instead
+    assert abs(pieces_snapped[1][0] - 5.3) < 1e-9
+
+
+def test_clip_pieces_seam_snap_respects_max_distance() -> None:
+    # A gap far outside seam_snap_max_s must not move the breakpoint.
+    anchors = [Anchor(cam_time=5.0, rec_time=5.0, token="w1", confidence=0.9)]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
+    cfg = WhisperSyncConfig(seam_snap_max_s=0.4)
+    _, pieces = clip_pieces(
+        am, clip_duration=10.0, rec_duration=20.0, strategy_id=2, config=cfg, rec_word_gaps=[7.0]
+    )
+    assert abs(pieces[1][0] - 5.0) < 1e-9  # far gap ignored, boundary stays put
 
 
 def _align(rec_start: float, k: float = 1.0) -> AlignmentMap:
@@ -72,7 +135,7 @@ def test_unaligned_clip_falls_back_to_previous_end() -> None:
     assert unaligned == [1]
 
 
-def _fake_probe(path: Path):  # noqa: ANN202
+def _fake_probe(path: Path, timeout: float = 30.0):  # noqa: ANN202
     from fractions import Fraction
 
     from whispersync.engine.media import MediaInfo
@@ -95,11 +158,12 @@ def test_scan_cameras_flat_dir_is_single_camera(tmp_path, monkeypatch) -> None: 
     (tmp_path / "a.mp4").touch()
     (tmp_path / "b.mp4").touch()
 
-    cams = scan_cameras(tmp_path, WhisperSyncConfig())
+    cams, warns = scan_cameras(tmp_path, WhisperSyncConfig())
     assert len(cams) == 1
     assert cams[0].lane == 1
     assert len(cams[0].clips) == 2
     assert all(c.lane == 1 for c in cams[0].clips)
+    assert warns == []
 
 
 def test_scan_cameras_subfolders_become_separate_lanes(
@@ -112,12 +176,27 @@ def test_scan_cameras_subfolders_become_separate_lanes(
     (tmp_path / "camA" / "a2.mp4").touch()
     (tmp_path / "camB" / "b1.mp4").touch()
 
-    cams = scan_cameras(tmp_path, WhisperSyncConfig())
+    cams, warns = scan_cameras(tmp_path, WhisperSyncConfig())
     assert [c.name for c in cams] == ["camA", "camB"]
     assert cams[0].lane == 1 and cams[1].lane == 2
     assert len(cams[0].clips) == 2 and len(cams[1].clips) == 1
     assert all(c.lane == 1 for c in cams[0].clips)
     assert all(c.lane == 2 for c in cams[1].clips)
+    assert warns == []
+
+
+def test_scan_cameras_warns_about_ignored_root_files(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    # Camera sub-folders exist AND there's a stray video file in the root —
+    # that file is silently excluded from the run unless we warn about it.
+    monkeypatch.setattr("whispersync.engine.pipeline.probe", _fake_probe)
+    (tmp_path / "camA").mkdir()
+    (tmp_path / "camA" / "a1.mp4").touch()
+    (tmp_path / "stray.mp4").touch()
+
+    cams, warns = scan_cameras(tmp_path, WhisperSyncConfig())
+    assert [c.name for c in cams] == ["camA"]
+    assert len(warns) == 1
+    assert "stray.mp4" in warns[0]
 
 
 def test_scan_cameras_empty_dir_raises(tmp_path, monkeypatch) -> None:  # noqa: ANN001
@@ -218,3 +297,15 @@ def test_sequence_order_no_warning_when_consistent() -> None:
 
     clips = [_vclip("a1", 0.0, 10.0, 1), _vclip("a2", 12.0, 10.0, 1)]
     assert sequence_order_warnings(clips, [0, 0], [True, True]) == []
+
+
+def test_camera_av_offset_resolution_defaults_and_overrides() -> None:
+    # config.camera_av_offset_ms_by_camera.get(camera_name, default) is the
+    # exact resolution pipeline.run_pipeline uses — locks the per-camera
+    # override / global-default contract without needing a full pipeline run.
+    cfg = WhisperSyncConfig(
+        camera_av_offset_ms=10.0,
+        camera_av_offset_ms_by_camera={"camB": -5.0},
+    )
+    assert cfg.camera_av_offset_ms_by_camera.get("camA", cfg.camera_av_offset_ms) == 10.0
+    assert cfg.camera_av_offset_ms_by_camera.get("camB", cfg.camera_av_offset_ms) == -5.0

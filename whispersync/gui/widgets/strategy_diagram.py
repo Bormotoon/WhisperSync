@@ -27,8 +27,6 @@ class StrategyDiagram(QWidget):
         elif self._strategy_id == 2:
             self._paint_segments(painter)
         elif self._strategy_id == 3:
-            self._paint_speech_silence(painter)
-        elif self._strategy_id == 4:
             self._paint_hybrid(painter)
 
         painter.end()
@@ -70,33 +68,6 @@ class StrategyDiagram(QWidget):
             w = int(total_w * w_ratio)
             rect = self._block_rect(x, w)
             self._draw_block(painter, rect, colors[i], f"Seg {i + 1}")
-            x += w + 4
-
-    def _paint_speech_silence(self, painter: QPainter) -> None:
-        margin = 16
-        segments = [
-            (0.18, "#E53935", "Speech"),
-            (0.06, "#333333", None),
-            (0.22, "#E53935", "Speech"),
-            (0.08, "#333333", None),
-            (0.15, "#E53935", "Speech"),
-            (0.05, "#333333", None),
-            (0.20, "#E53935", "Speech"),
-        ]
-        total_w = self.width() - 2 * margin
-        x = margin
-
-        for w_ratio, color, label in segments:
-            w = int(total_w * w_ratio)
-            rect = self._block_rect(x, w)
-
-            if label is None:
-                painter.setPen(QPen(QColor("#555555"), 1, Qt.PenStyle.DashLine))
-                painter.setBrush(QBrush(QColor(color)))
-                painter.drawRoundedRect(rect, 4, 4)
-            else:
-                self._draw_block(painter, rect, QColor(color), label)
-
             x += w + 4
 
     def _paint_hybrid(self, painter: QPainter) -> None:

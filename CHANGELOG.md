@@ -4,6 +4,149 @@ All notable changes to WhisperSync will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — GitHub publication prep (2026-07-03)
+
+- **License changed from MIT to PolyForm Noncommercial 1.0.0**: WhisperSync
+  is now source-available and free for noncommercial use; commercial use
+  requires a separate license from the author. `pyproject.toml`, LICENSE,
+  CONTRIBUTING, and both READMEs updated accordingly.
+- **README overhaul**: English is now the default `README.md` (the Russian
+  version moved to `README.ru.md`, replacing the old `README.en.md`
+  arrangement). Both are full mirrors covering every feature, the complete
+  CLI/config reference, output files, verification tools, architecture, and
+  data flow.
+- **Fresh GUI screenshots** rendered from the current UI (multi-recorder
+  drop zone, recorder-mode picker, Re-run button, settings dialog, populated
+  multitrack timeline); the obsolete strategy-4 diagram was removed and the
+  strategy/simulator shots regenerated to match the merged 3-strategy model.
+
+### Changed — final plan-completion audit (2026-07-03)
+
+A start-to-finish re-verification of the remediation plan against the code
+found and closed the last few gaps:
+
+- **One shared render pool for the whole run** (PROJECT_ANALYSIS.md §6.4):
+  pieces of every clip now render through a single process pool, and each
+  clip's final assembly overlaps the rendering of the next clips' pieces —
+  previously a new pool was created per clip and its single-threaded
+  assembly idled every core at each clip boundary.
+- **Mid-job cancellation actually works on multi-core renders**: the pooled
+  path now polls the cancel event while waiting for each piece (the old
+  per-job pool only honoured cancellation on the sequential
+  `render_workers=1` path, so cancelling during a large clip silently
+  waited for the whole clip to finish). Queued pieces are dropped
+  immediately on cancel.
+- **Fork safety** (PROJECT_ANALYSIS.md §3.3): the render pool forks only
+  when the process is single-threaded (the CLI path); a multi-threaded
+  process — the GUI always renders from a Qt worker thread — gets
+  forkserver/spawn instead, eliminating the classic
+  fork-a-multithreaded-process deadlock risk that Python 3.12+ warns about.
+  `main.py` calls `multiprocessing.freeze_support()` for frozen builds.
+- **Transcript-cache retention**: new `cache_max_age_days` config field
+  (default `0` = keep forever) prunes cache entries older than N days at
+  engine startup, capping the previously unbounded growth of
+  `~/.cache/whispersync/`.
+- Removed the now-dead `apply_pause_ducking` (ducking has been folded into
+  the single-pass assembly since the Stage 1 render overhaul; nothing
+  called it anymore).
+
+### Added — new features (Stage 7, 2026-07-03)
+
+- **Auto-strategy recommendation**: after a run, the residual/local-drift
+  characteristics of the best alignment are checked against the strategy
+  actually used; if a different strategy would likely fit better, a warning
+  suggests it (transcripts are cached, so re-running is cheap).
+- **Acoustic fallback ("Strategy 0")**: a clip with no usable transcript match
+  against any recorder (music, background noise, near-silence, a language
+  Whisper garbles) now falls back to a coarse GCC-PHAT cross-correlation grid
+  scan across the waveforms to estimate offset/K directly — turning a hard
+  failure into a still-working (if less precise) placement, as long as the
+  same physical audio event reaches both the camera and recorder mic. On by
+  default (`acoustic_fallback`).
+- **Per-camera AV/lip-sync calibration**: `camera_av_offset_ms` /
+  `camera_av_offset_ms_by_camera` (and `--camera-av-offset-ms`) apply a
+  constant correction for a camera's own mic-to-lips delay, which no
+  acoustic method can see on its own.
+- **`--render-master-wav`**: optionally render a single WAV spanning the
+  whole timeline (every synced voice clip, and the ambience track if
+  enabled, mixed at their timeline offsets over a silent bed) next to the
+  FCPXML, for anyone without an NLE.
+- **GUI parity with the CLI**: the Recorder Audio drop zone now accepts
+  multiple files (drag-drop or Browse) with a `best`/`all` recorder-mode
+  picker; a new "Transcription Settings..." dialog exposes
+  model/language/device/compute-type/initial-prompt/transcribe-mode; a
+  "Re-run with Selected Strategy" button appears after a successful run
+  (transcripts are cached, so it skips straight to alignment/render); and
+  the status/log now shows "Loading Whisper model..." during a first-time
+  (possibly HuggingFace-downloading) model load instead of looking frozen.
+
+### Changed — quality/reliability overhaul (2026-07-02)
+
+A full project audit (`PROJECT_ANALYSIS.md`) found that the rendered voice
+track was audibly worse than the recorder source for reasons unrelated to
+synchronization, that strategies 3 and 4 had silently become identical, and a
+long tail of reliability/cross-platform/dead-code issues. This release fixes
+all of it:
+
+- **Bit-perfect render path**: the render no longer forces mono/16-bit —
+  every stage (extract, resample-conform/atempo, assemble, pause-duck)
+  preserves the recorder's native channel count and a lossless PCM codec
+  matching its bit depth. Recorders are normalized to a lossless master WAV
+  once up front (fixes non-sample-accurate cutting from lossy sources like
+  mp3/m4a, and format mismatches between pieces and lead-silence). A new
+  transparent resample ("varispeed") conform replaces `atempo`/WSOLA for the
+  small tempo changes real clock drift produces, avoiding WSOLA's phase/
+  texture artifacts where they weren't needed. Fades apply only to seams that
+  are acoustically discontinuous (e.g. nudged by Boundary Flex), not to every
+  piece boundary — the old behaviour carved an audible volume dip into
+  otherwise-continuous audio on nearly every seam of the phrase-wise
+  strategies. Pause-ducking is folded into the assembly pass instead of a
+  second full decode/encode.
+- **Strategies 3 and 4 merged**: in the real render path they had become
+  byte-identical (old strategy 3 "Silence Padding" promised zero pitch-shift
+  but was actually time-stretching every phrase like Hybrid). Now one honest
+  "Hybrid" strategy at id 3; `--strategy 4` is a deprecated alias.
+- **Seam-snap-to-silence** replaces the old tempo-factor smoothing (which
+  fixed the mid-word stutter by averaging atempo factors but let speech drift
+  off the picture by up to 1.4s): piece boundaries now snap to the nearest
+  recorder inter-word silence, so a seam never lands mid-word without
+  touching any piece's tempo factor.
+- **Pause ducking** now ducks only where BOTH the camera and recorder tracks
+  are actually silent (from full word lists), not gaps between matched
+  anchors — a quiet phrase or a word Whisper missed no longer gets
+  attenuated as a false "pause".
+- **Reliability**: Whisper's VRAM is freed right after alignment instead of
+  being held through rendering/ambience separation (a common GPU-OOM cause);
+  clips with no audio track no longer abort the whole run; a JSON config with
+  a typo'd key now warns instead of silently no-opping; the transcript cache
+  key is keyed by the actually-resolved device/compute-type, not the literal
+  `"auto"`.
+- **Cross-platform**: `file://` URIs use `Path.as_uri()` (the old hand-rolled
+  version mis-encoded Windows paths); "Open Output Folder" uses
+  `QDesktopServices` instead of Linux-only `xdg-open`.
+- **CLI**: `--json` now sends all human-readable output to stderr so the
+  report on stdout is clean for piping; added `--version`; exit codes
+  distinguish usage errors (2) from run failures (1); fixed `main.py --cli`
+  passing `--cli` through to argparse unstripped.
+- **Dead code removed**: `engine/dtw.py` (banded-DTW anchor matcher — shelved
+  after real-data measurements showed it performed worse than the legacy
+  matcher), `acoustic.refine_anchors` (Tier-2 anchor correction, superseded
+  once the real float bug was found in the render path, not the anchor
+  layer), the entire `plan_clip`-based `SyncStrategy` class hierarchy in
+  `strategies.py` (the pipeline only ever read `.name`; real planning lives
+  in `pipeline.clip_pieces`), and several unused `timestretch`/`naming`
+  helpers.
+- **Packaging**: `pyproject.toml` now declares a build backend and its actual
+  dependencies (`pip install .` previously installed nothing); dropped the
+  unused `pydub`/`ffmpeg-python`; the GUI/CLI dispatcher moved from
+  repo-root `main.py` into `whispersync/app.py` so the `whispersync-gui`
+  entry point resolves after a wheel install.
+- Unified defaults: `default_strategy` (1 → 3) and `boundary_flex`
+  (off → on) are now read from `WhisperSyncConfig` by both the CLI and the
+  GUI, instead of disagreeing with each other.
+
+See `PROJECT_ANALYSIS.md` for the full technical audit this release addresses.
+
 ### Added
 - **GitHub-ready project**: real GUI screenshots (rendered via Qt offscreen) in
   the README, bilingual README (RU + `README.en.md`), `CONTRIBUTING.md`,

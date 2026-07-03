@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from whispersync import __version__
 from whispersync.config import WhisperSyncConfig, load_config
 from whispersync.engine.pipeline import PipelineProgress, run_pipeline
 from whispersync.logging_setup import setup_logging
@@ -17,10 +18,20 @@ try:
     from rich.console import Console
 
     _console: Console | None = Console()
+    _console_err: Console | None = Console(stderr=True)
 except ImportError:
     _console = None
+    _console_err = None
 
 logger = logging.getLogger("whispersync.cli")
+
+# Exit codes: distinguish "the invocation itself was wrong" (usage/arguments)
+# from "the invocation was fine but the run failed" (alignment/environment/
+# ffmpeg), so scripts calling whispersync can react differently. See
+# PROJECT_ANALYSIS.md §7.12.
+EXIT_OK = 0
+EXIT_RUN_FAILED = 1
+EXIT_USAGE_ERROR = 2
 
 
 # ---------------------------------------------------------------------------
@@ -28,17 +39,30 @@ logger = logging.getLogger("whispersync.cli")
 # ---------------------------------------------------------------------------
 
 
-def _print(msg: str) -> None:
+def _print(msg: str, *, to_stderr: bool = False) -> None:
+    """Print a human-readable message. With --json, EVERYTHING except the
+    final JSON report goes to stderr, so `whispersync ... --json | jq` gets a
+    clean stdout stream instead of progress lines interleaved with the report.
+    See PROJECT_ANALYSIS.md §7.9."""
+    if to_stderr:
+        if _console_err is not None:
+            _console_err.print(msg, highlight=False)
+        else:
+            print(msg, file=sys.stderr, flush=True)
+        return
     if _console is not None:
         _console.print(msg, highlight=False)
     else:
         print(msg, flush=True)
 
 
-def _progress_printer(p: PipelineProgress) -> None:
-    pct = int(p.progress * 100)
-    msg = p.message or p.stage
-    _print(f"  [{p.stage:<25s}] {pct:3d}%  {msg}")
+def _progress_printer(json_output: bool) -> Any:
+    def _emit(p: PipelineProgress) -> None:
+        pct = int(p.progress * 100)
+        msg = p.message or p.stage
+        _print(f"  [{p.stage:<25s}] {pct:3d}%  {msg}", to_stderr=json_output)
+
+    return _emit
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +81,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--video-dir", required=True, type=Path, help="Path to folder with video files"
     )
@@ -89,18 +114,53 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Crossfade/declick fade length in ms (default: 10)",
     )
     parser.add_argument(
+        "--render-workers",
+        type=int,
+        default=None,
+        help="Parallel ffmpeg processes for audio render (0=auto=CPU count, 1=serial)",
+    )
+    parser.add_argument(
         "--save-transcripts",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Save full transcripts (JSON + SRT) to output/transcripts/ (default: on)",
     )
     parser.add_argument(
+        "--boundary-flex",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Acoustically refine each piece's start by cross-correlation for "
+        "sub-frame lip-sync (default: off). Adds extra processing.",
+    )
+    parser.add_argument(
+        "--pause-duck",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="pause_duck_enabled",
+        help="Attenuate inter-phrase pauses to hide ambience desync (default: off)",
+    )
+    parser.add_argument(
+        "--pause-duck-db",
+        type=float,
+        default=None,
+        help="Pause attenuation in dB: 0=off … large negative→silence (default: -18)",
+    )
+    parser.add_argument(
+        "--ambience-track",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Add a voice-free camera-ambience track (removes the camera's doubled "
+        "voice, keeps the room tone); needs the .sep-venv environment. Default: off.",
+    )
+    parser.add_argument(
         "--strategy",
         choices=[1, 2, 3, 4],
-        default=1,
+        default=None,
         type=int,
-        help="Sync strategy: 1=global linear, 2=local stretch, 3=silence padding, "
-        "4=hybrid (default: 1)",
+        help="Sync strategy: 1=global linear, 2=local stretch, 3=hybrid "
+        "(recommended; default — see WhisperSyncConfig.default_strategy). 4 is "
+        "accepted as a deprecated alias for 3 (the old id-3 'Silence Padding' "
+        "was merged into Hybrid).",
     )
     parser.add_argument(
         "--timebase-source",
@@ -112,6 +172,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--audio-source-camera",
         default=None,
         help="Multicam: camera sub-folder name to sync audio from (default: auto)",
+    )
+    parser.add_argument(
+        "--camera-av-offset-ms",
+        type=float,
+        default=None,
+        help="Constant per-camera lip-sync calibration in ms, added to every synced "
+        "clip's timeline offset (default: 0). Corrects a fixed mic-to-lips delay in "
+        "the camera's own audio pipeline that acoustic alignment cannot see.",
     )
     parser.add_argument(
         "--output",
@@ -149,9 +217,69 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run", action="store_true", help="Only scan + transcribe + align, skip processing"
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="After a successful run, measure realized lip-sync lag per clip via "
+        "GCC-PHAT cross-correlation (see tools/verify_sync.py) and print a summary",
+    )
+    parser.add_argument(
+        "--render-master-wav",
+        dest="render_master_wav",
+        action="store_true",
+        default=None,
+        help="Also render a single WAV spanning the whole timeline (every synced "
+        "voice clip, and ambience if enabled, mixed at their timeline offsets) "
+        "next to the FCPXML, for users without an NLE",
+    )
     parser.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
     return parser
+
+
+# ---------------------------------------------------------------------------
+# --verify: post-render self-check
+# ---------------------------------------------------------------------------
+
+
+def _run_verify(result: Any, json_output: bool) -> list[dict[str, Any]]:
+    """Measure realized lag for every (video, synced voice) pair in the sync
+    result, using the same GCC-PHAT harness as tools/verify_sync.py. Video
+    audio is decoded fresh (via ffmpeg) rather than reusing any transcription
+    scratch file, since those are cleaned up by the time rendering finishes.
+    """
+    from tools.verify_sync import measure
+
+    video_clips = {c.path.stem: c.path for c in result.plan.clips if c.kind == "video"}
+    reports: list[dict[str, Any]] = []
+    for clip in result.plan.clips:
+        if clip.kind != "audio" or clip.role != "Dialogue":
+            continue
+        # "<video_stem>_voice[_<recorder>]" -> match back to its video clip.
+        video_path = next(
+            (p for stem, p in video_clips.items() if (clip.display_name or "").startswith(stem)),
+            None,
+        )
+        if video_path is None:
+            continue
+        try:
+            report = measure(video_path, clip.path)
+        except (RuntimeError, ValueError) as e:
+            _print(f"  verify: {clip.path.name}: measurement failed ({e})", to_stderr=json_output)
+            continue
+        summary = report.summary()
+        reports.append({"clip": clip.display_name or clip.path.stem, **summary})
+        if not json_output:
+            median = summary.get("median_abs_lag_ms")
+            p90 = summary.get("p90_abs_lag_ms")
+            median_str = f"{median:.1f}" if median is not None else "n/a"
+            p90_str = f"{p90:.1f}" if p90 is not None else "n/a"
+            _print(
+                f"  verify: {clip.display_name or clip.path.stem}: "
+                f"median {median_str} ms, p90 {p90_str} ms "
+                f"({summary['n_confident']}/{summary['n_total']} confident points)"
+            )
+    return reports
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +297,7 @@ def _run_dry_run(
     from contextlib import suppress
 
     from whispersync.engine.matcher import align as match_align
+    from whispersync.engine.matcher import build_recorder_index, normalize_words
     from whispersync.engine.media import extract_audio_to_wav
     from whispersync.engine.pipeline import scan_video_clips
     from whispersync.engine.transcriber import WhisperEngine
@@ -193,6 +322,14 @@ def _run_dry_run(
             rec_transcripts.append(
                 engine.transcribe(rp, lambda p: _notify("transcribing_recorder", p))
             )
+        # Built once per recorder and reused for every clip aligned against it —
+        # see PROJECT_ANALYSIS.md §6.5.
+        rec_indices = [
+            build_recorder_index(
+                normalize_words(list(rt.words), config.anchor_min_confidence), config
+            )
+            for rt in rec_transcripts
+        ]
 
         # Align each clip against each recorder and return the richest alignment.
         best: Any = None
@@ -202,9 +339,9 @@ def _run_dry_run(
             clip_audio = extract_audio_to_wav(clip.path)
             cleanup_paths.append(clip_audio)
             clip_transcript = engine.transcribe(clip_audio)
-            for rec_transcript in rec_transcripts:
+            for ri, rec_transcript in enumerate(rec_transcripts):
                 try:
-                    am = match_align(clip_transcript, rec_transcript, config)
+                    am = match_align(clip_transcript, rec_transcript, config, rec_indices[ri])
                 except ValueError:
                     continue
                 if best is None or len(am.anchors) > len(best.anchors):
@@ -244,6 +381,8 @@ def _print_sync_result(result: Any) -> None:
     _print(f"  Offset:     {result.alignment.offset:.4f} s")
     _print(f"  Residual:   {result.alignment.residual_ms:.1f} ms")
     _print(f"  Output:     {result.fcpxml_path}")
+    if result.master_wav_path is not None:
+        _print(f"  Master WAV: {result.master_wav_path}")
     if result.warnings:
         _print(f"  Warnings:   {', '.join(result.warnings)}")
 
@@ -260,12 +399,12 @@ def main() -> None:
     setup_logging(level=logging.DEBUG if args.verbose else logging.INFO)
 
     if not args.video_dir.is_dir():
-        _print(f"Error: {args.video_dir} is not a directory")
-        sys.exit(1)
+        _print(f"Error: {args.video_dir} is not a directory", to_stderr=args.json_output)
+        sys.exit(EXIT_USAGE_ERROR)
     for af in args.audio_files:
         if not af.is_file():
-            _print(f"Error: {af} is not a file")
-            sys.exit(1)
+            _print(f"Error: {af} is not a file", to_stderr=args.json_output)
+            sys.exit(EXIT_USAGE_ERROR)
 
     overrides: dict[str, object] = {}
     if args.model:
@@ -288,31 +427,67 @@ def main() -> None:
         overrides["timebase_source"] = args.timebase_source
     if args.audio_source_camera:
         overrides["audio_source_camera"] = args.audio_source_camera
+    if args.camera_av_offset_ms is not None:
+        overrides["camera_av_offset_ms"] = args.camera_av_offset_ms
     if args.recorder_mode:
         overrides["recorder_mode"] = args.recorder_mode
     if args.crossfade is not None:
         overrides["crossfade_enabled"] = args.crossfade
     if args.crossfade_ms is not None:
         overrides["crossfade_ms"] = args.crossfade_ms
+    if args.render_workers is not None:
+        overrides["render_workers"] = args.render_workers
     if args.save_transcripts is not None:
         overrides["save_transcripts"] = args.save_transcripts
+    if args.boundary_flex is not None:
+        overrides["boundary_flex"] = args.boundary_flex
+    if args.pause_duck_enabled is not None:
+        overrides["pause_duck_enabled"] = args.pause_duck_enabled
+    if args.pause_duck_db is not None:
+        overrides["pause_duck_db"] = args.pause_duck_db
+    if args.ambience_track is not None:
+        overrides["ambience_track"] = args.ambience_track
+    if args.render_master_wav is not None:
+        overrides["render_master_wav"] = args.render_master_wav
 
     if args.no_cache:
         overrides["use_cache"] = False
 
-    config = load_config(args.config, **overrides)
+    try:
+        config = load_config(args.config, **overrides)
+    except FileNotFoundError as exc:
+        _print(f"Error: {exc}", to_stderr=args.json_output)
+        sys.exit(EXIT_USAGE_ERROR)
+
+    # --strategy left unset -> config.default_strategy (the single source of
+    # truth the GUI also reads; see PROJECT_ANALYSIS.md §4.4). 4 is a
+    # deprecated alias for 3: the old id-3 "Silence Padding" was merged into
+    # Hybrid because they had become byte-identical in the real render path.
+    if args.strategy is None:
+        args.strategy = config.default_strategy
+    elif args.strategy == 4:
+        _print(
+            "Warning: --strategy 4 is deprecated; strategies 3 and 4 were merged "
+            "into a single Hybrid strategy (id 3). Using strategy 3.",
+            to_stderr=args.json_output,
+        )
+        args.strategy = 3
 
     # Default the output next to the sources (the video folder), which usually
     # lives on a volume with room — unlike the repo's working directory.
     output_path = args.output or (args.video_dir / "sync_output.fcpxml")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _print("WhisperSync — Starting synchronization")
-    _print(f"  Video dir:   {args.video_dir}")
-    _print(f"  Audio files: {', '.join(str(a) for a in args.audio_files)}")
-    _print(f"  Strategy:    {args.strategy}")
-    _print(f"  Output:      {output_path}")
-    _print("")
+    _print("WhisperSync — Starting synchronization", to_stderr=args.json_output)
+    _print(f"  Video dir:   {args.video_dir}", to_stderr=args.json_output)
+    _print(
+        f"  Audio files: {', '.join(str(a) for a in args.audio_files)}", to_stderr=args.json_output
+    )
+    _print(f"  Strategy:    {args.strategy}", to_stderr=args.json_output)
+    _print(f"  Output:      {output_path}", to_stderr=args.json_output)
+    _print("", to_stderr=args.json_output)
+
+    progress_callback = _progress_printer(args.json_output)
 
     try:
         if args.dry_run:
@@ -320,7 +495,7 @@ def main() -> None:
                 config=config,
                 video_dir=args.video_dir,
                 audio_files=args.audio_files,
-                progress_callback=_progress_printer,
+                progress_callback=progress_callback,
             )
             if args.json_output:
                 report = {
@@ -341,8 +516,9 @@ def main() -> None:
                 audio_files=args.audio_files,
                 strategy_id=args.strategy,
                 output_path=output_path,
-                progress_callback=_progress_printer,
+                progress_callback=progress_callback,
             )
+            verify_reports = _run_verify(result, args.json_output) if args.verify else None
             if args.json_output:
                 report = {
                     "offset": result.alignment.offset,
@@ -350,21 +526,26 @@ def main() -> None:
                     "anchors": result.anchors_used,
                     "residual_ms": result.alignment.residual_ms,
                     "fcpxml_path": str(result.fcpxml_path),
+                    "master_wav_path": (
+                        str(result.master_wav_path) if result.master_wav_path else None
+                    ),
                     "warnings": result.warnings,
                 }
+                if verify_reports is not None:
+                    report["verify"] = verify_reports
                 print(json.dumps(report, indent=2))
             else:
                 _print_sync_result(result)
 
     except Exception as exc:
-        _print(f"\nError: {exc}")
+        _print(f"\nError: {exc}", to_stderr=args.json_output)
         if args.verbose:
             import traceback
 
-            traceback.print_exc()
-        sys.exit(1)
+            traceback.print_exc(file=sys.stderr if args.json_output else sys.stdout)
+        sys.exit(EXIT_RUN_FAILED)
 
-    sys.exit(0)
+    sys.exit(EXIT_OK)
 
 
 if __name__ == "__main__":

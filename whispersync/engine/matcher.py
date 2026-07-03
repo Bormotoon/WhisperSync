@@ -5,8 +5,9 @@ from __future__ import annotations
 import difflib
 import logging
 import random
-import string
+import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -15,9 +16,16 @@ from whispersync.models import AlignmentMap, Anchor, Transcript, Word
 
 logger = logging.getLogger(__name__)
 
+# Strip anything that isn't a Unicode word character. string.punctuation (the
+# old approach) only covers ASCII punctuation, so Russian/typographic marks
+# like «», —, … pass through untouched and words end up with stray leading/
+# trailing punctuation that never matches its "clean" counterpart on the other
+# track — a silent source of lost anchors on non-English (esp. Russian) audio.
+_NON_WORD_RE = re.compile(r"[^\w]", re.UNICODE)
+
 
 def normalize_token(text: str) -> str:
-    return text.lower().translate(str.maketrans("", "", string.punctuation)).strip()
+    return _NON_WORD_RE.sub("", text.lower())
 
 
 def normalize_words(words: list[Word], min_confidence: float) -> list[Word]:
@@ -37,8 +45,35 @@ def _mid(w: Word) -> float:
     return (w.start + w.end) / 2
 
 
+@dataclass
+class RecorderIndex:
+    """Rare-word position index for one recorder's normalized words, used by
+    ``estimate_coarse_delta``. Building it (a ``Counter`` + position lists over
+    every recorder word) is the same work regardless of which camera clip is
+    being coarse-located, but the whole recorder is re-indexed from scratch for
+    every clip aligned against it — expensive for a multi-hour recorder aligned
+    against dozens of clips. Build once per recorder with ``build_recorder_index``
+    and pass it into ``align``/``estimate_coarse_delta`` to reuse it.
+    See PROJECT_ANALYSIS.md §6.5.
+    """
+
+    rec_positions: dict[str, list[float]]
+
+
+def build_recorder_index(rec_words: list[Word], config: WhisperSyncConfig) -> RecorderIndex:
+    rec_count = Counter(w.norm for w in rec_words)
+    rec_positions: dict[str, list[float]] = defaultdict(list)
+    for w in rec_words:
+        if rec_count[w.norm] <= config.seed_max_occurrences:
+            rec_positions[w.norm].append(_mid(w))
+    return RecorderIndex(rec_positions=dict(rec_positions))
+
+
 def estimate_coarse_delta(
-    cam_words: list[Word], rec_words: list[Word], config: WhisperSyncConfig
+    cam_words: list[Word],
+    rec_words: list[Word],
+    config: WhisperSyncConfig,
+    rec_index: RecorderIndex | None = None,
 ) -> float | None:
     """Roughly locate the clip inside a (possibly very long) reference by voting
     on the time delta ``rec_time - cam_time`` of shared rare words. Returns the
@@ -47,12 +82,15 @@ def estimate_coarse_delta(
 
     Assumes K ≈ 1 for the coarse pass, which is accurate enough over a single
     clip to pick the right window; the fine pass recovers the exact K.
+
+    Pass a pre-built ``rec_index`` (``build_recorder_index``) to skip
+    re-indexing the same recorder for every clip aligned against it.
     """
-    rec_count = Counter(w.norm for w in rec_words)
-    rec_positions: dict[str, list[float]] = defaultdict(list)
-    for w in rec_words:
-        if rec_count[w.norm] <= config.seed_max_occurrences:
-            rec_positions[w.norm].append(_mid(w))
+    rec_positions = (
+        rec_index.rec_positions
+        if rec_index is not None
+        else build_recorder_index(rec_words, config).rec_positions
+    )
 
     bin_width = config.seed_bin_width
     votes: Counter[int] = Counter()
@@ -155,20 +193,52 @@ def reject_gross_outliers(
     Unlike a global-linear inlier test, this keeps anchors that follow a *smooth*
     (possibly non-linear) drift, because each is only compared to its neighbours.
     ``anchors`` must be sorted by rec_time (as produced by ``_anchors_from_words``).
+
+    The window shrinks (down to a minimum of 2) for short anchor lists instead of
+    disabling the filter outright — a clip with, say, 12 anchors used to skip this
+    check entirely (it needed >= 2*window=20), so a single 5-second-off outlier
+    would ride straight through to the piecewise warp. See PROJECT_ANALYSIS.md §2.6.
     """
-    if len(anchors) < 2 * window:
-        return anchors
-    deltas = [a.cam_time - a.rec_time for a in anchors]
     n = len(anchors)
+    if n < 4:
+        return anchors
+    eff_window = min(window, max(2, n // 4))
+    deltas = [a.cam_time - a.rec_time for a in anchors]
     kept: list[Anchor] = []
     for i, a in enumerate(anchors):
-        lo = max(0, i - window)
-        hi = min(n, i + window + 1)
+        lo = max(0, i - eff_window)
+        hi = min(n, i + eff_window + 1)
         local = sorted(deltas[lo:hi])
         median = local[len(local) // 2]
         if abs(deltas[i] - median) <= tol_s:
             kept.append(a)
     return kept
+
+
+def reject_residual_outliers(
+    anchors: list[Anchor],
+    offset: float,
+    k: float,
+    min_factor: float = 3.0,
+    min_residual_s: float = 0.25,
+) -> list[Anchor]:
+    """Drop anchors whose residual against the fitted line (offset, k) is both
+    far from the pack (> ``min_factor`` times the median residual) AND
+    absolutely large (> ``min_residual_s``), so a lone isolated mismatch that
+    slipped past ``reject_gross_outliers`` (e.g. because its local neighbourhood
+    happened to also be sparse/noisy) doesn't feed the piecewise warp — a single
+    such anchor can force a 0.5-5s stretch on its piece. Requires both
+    conditions so a genuinely noisy-but-honest alignment (all residuals modestly
+    elevated) isn't gutted. See PROJECT_ANALYSIS.md §2.6.
+    """
+    if len(anchors) < 4:
+        return anchors
+    residuals = [abs((offset + k * a.rec_time) - a.cam_time) for a in anchors]
+    sorted_res = sorted(residuals)
+    median = sorted_res[len(sorted_res) // 2]
+    threshold = max(min_factor * median, min_residual_s)
+    kept = [a for a, r in zip(anchors, residuals, strict=True) if r <= threshold]
+    return kept if len(kept) >= 2 else anchors
 
 
 def ransac_linear_fit(
@@ -210,7 +280,10 @@ def ransac_linear_fit(
 
 
 def _window_recorder(
-    cam_words: list[Word], rec_words: list[Word], config: WhisperSyncConfig
+    cam_words: list[Word],
+    rec_words: list[Word],
+    config: WhisperSyncConfig,
+    rec_index: RecorderIndex | None = None,
 ) -> list[Word]:
     """If the recorder is much longer than the clip, restrict matching to a
     window around the coarse estimate; otherwise return all recorder words."""
@@ -223,7 +296,7 @@ def _window_recorder(
     if rec_span <= (cam_hi - cam_lo) + 4 * margin:
         return rec_words
 
-    delta = estimate_coarse_delta(cam_words, rec_words, config)
+    delta = estimate_coarse_delta(cam_words, rec_words, config, rec_index)
     if delta is None:
         return rec_words
 
@@ -243,23 +316,44 @@ def _window_recorder(
     return windowed
 
 
+def _match_words(cam_words: list[Word], rec_words: list[Word]) -> list[Anchor]:
+    """Produce anchors from normalized words via the difflib LCS matcher.
+
+    This used to also dispatch to a banded-DTW backend (``config.align_mode
+    == "dtw"``); real-data measurements showed it performed worse than
+    difflib on this project's actual failure modes (see the git history and
+    PROJECT_ANALYSIS.md for the investigation) and it was removed along with
+    ``engine/dtw.py``. Kept as a thin wrapper — a single call site for word
+    matching — in case a future backend is worth adding here again.
+    """
+    return _anchors_from_words(cam_words, rec_words)
+
+
 def align(
     cam_transcript: Transcript,
     rec_transcript: Transcript,
     config: WhisperSyncConfig,
+    rec_index: RecorderIndex | None = None,
 ) -> AlignmentMap:
+    """Align a camera clip's transcript to a recorder's.
+
+    ``rec_index`` (``build_recorder_index``) lets a caller aligning many clips
+    against the SAME recorder build its rare-word position index once instead
+    of on every call — the index only depends on ``rec_transcript`` and
+    ``config``, not on the clip. Optional; built on the fly if omitted.
+    """
     cam_words = normalize_words(list(cam_transcript.words), config.anchor_min_confidence)
     rec_words = normalize_words(list(rec_transcript.words), config.anchor_min_confidence)
     if not cam_words or not rec_words:
         raise ValueError("No usable words to align (check confidence threshold / speech content).")
 
-    rec_used = _window_recorder(cam_words, rec_words, config)
-    anchors = _anchors_from_words(cam_words, rec_used)
+    rec_used = _window_recorder(cam_words, rec_words, config, rec_index)
+    anchors = _match_words(cam_words, rec_used)
 
     # If the coarse window was misleading, retry once against the full reference.
     if len(anchors) < config.min_anchors and rec_used is not rec_words:
         logger.info("Windowed match weak (%d anchors); retrying full reference", len(anchors))
-        anchors = _anchors_from_words(cam_words, rec_words)
+        anchors = _match_words(cam_words, rec_words)
 
     if len(anchors) < 2:
         raise ValueError(
@@ -278,6 +372,13 @@ def align(
     # A robust global line (offset, K) still drives timeline placement and the
     # Global-Linear strategy; it is fit on the cleaned anchors.
     offset, k, line_inliers = ransac_linear_fit(kept)
+
+    # A second pass against the fitted line catches an ISOLATED outlier that
+    # reject_gross_outliers missed (its own local neighbourhood was sparse/noisy
+    # enough to not flag it). Applied to `kept` (not just the RANSAC inlier set)
+    # so the piecewise warp — which uses every kept anchor, not only inliers —
+    # never sees a single-anchor 0.5-5s mismatch. See PROJECT_ANALYSIS.md §2.6.
+    kept = reject_residual_outliers(kept, offset, k)
 
     residuals_ms = [abs((offset + k * a.rec_time) - a.cam_time) * 1000 for a in line_inliers]
     residual_ms = float(np.median(residuals_ms)) if residuals_ms else 0.0
@@ -305,3 +406,49 @@ def align(
         k=k,
         residual_ms=residual_ms,
     )
+
+
+# Recommendation thresholds: below this residual, a single global tempo
+# conform already tracks the drift closely enough that per-segment
+# corrections wouldn't measurably improve sync. Above the non-linearity
+# threshold, the drift visibly bends within the clip (not just a constant
+# rate), which a single global K can't capture.
+_AUTO_LINEAR_RESIDUAL_MS = 15.0
+_AUTO_NONLINEARITY_MS = 60.0
+
+
+def recommend_strategy(alignment: AlignmentMap) -> tuple[int, str]:
+    """Recommend a sync strategy id from an already-computed alignment.
+
+    Looks at two signals a caller already paid for by calling ``align()``:
+    the fitted line's residual (how well a single global K already explains
+    the anchors) and the local non-linearity (how much consecutive anchors'
+    pairwise drift disagrees with the global line — a smooth non-linear
+    drift shows up as a large spread here even with a low overall residual).
+    Returns ``(strategy_id, reason)``, where ``reason`` is a short
+    human-readable justification suitable for a warning/log line. See
+    PROJECT_ANALYSIS.md §10.1.
+    """
+    anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
+    if alignment.residual_ms <= _AUTO_LINEAR_RESIDUAL_MS:
+        return 1, f"drift is linear (residual {alignment.residual_ms:.1f} ms)"
+
+    if len(anchors) >= 4:
+        # Local drift rate between consecutive anchor pairs, in the same units
+        # as K (dimensionless ratio) — how much does the clock ratio wobble
+        # across the clip, independent of the single global-line residual.
+        local_ks = [
+            (b.cam_time - a.cam_time) / (b.rec_time - a.rec_time)
+            for a, b in zip(anchors, anchors[1:], strict=False)
+            if b.rec_time > a.rec_time
+        ]
+        if local_ks:
+            spread = (max(local_ks) - min(local_ks)) * 1000.0  # ms/s-ish scale
+            if spread > _AUTO_NONLINEARITY_MS / 1000.0:
+                return (
+                    2,
+                    f"drift is non-linear (local rate spread {spread:.2f}‰, "
+                    f"residual {alignment.residual_ms:.1f} ms)",
+                )
+
+    return 3, f"drift needs per-phrase correction (residual {alignment.residual_ms:.1f} ms)"

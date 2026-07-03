@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -92,12 +93,48 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     return "out of memory" in msg and any(k in msg for k in ("cuda", "cudnn", "cublas", "gpu"))
 
 
+def _prune_cache(cache_dir: Path, max_age_days: float) -> int:
+    """Delete cached transcripts older than ``max_age_days`` (by mtime).
+
+    Called once per engine start when ``config.cache_max_age_days > 0`` —
+    transcripts are cheap to store but a machine churning through many
+    one-off projects can cap growth this way. Returns the number of entries
+    removed; any filesystem error on an individual entry is skipped (a
+    half-pruned cache is still a valid cache). See PROJECT_ANALYSIS.md §6.6.
+    """
+    if not cache_dir.is_dir():
+        return 0
+    cutoff = time.time() - max_age_days * 86400.0
+    removed = 0
+    for entry in cache_dir.glob("*.json"):
+        try:
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        logger.info("Pruned %d cached transcript(s) older than %g day(s)", removed, max_age_days)
+    return removed
+
+
 class WhisperEngine:
-    def __init__(self, config: WhisperSyncConfig) -> None:
+    def __init__(
+        self,
+        config: WhisperSyncConfig,
+        on_model_loading: Callable[[], None] | None = None,
+    ) -> None:
         self.config = config
         self._model: Any = None
         self._device: str = resolve_device(config.device)
         self._compute_type: str = select_compute_type(self._device, config.compute_type)
+        # Fired once, right before the (potentially slow, first-run-downloads-
+        # from-HuggingFace) model load actually happens — lets a caller show a
+        # "loading model..." status instead of the UI looking frozen. See
+        # PROJECT_ANALYSIS.md §Stage 7.5.
+        self._on_model_loading = on_model_loading
+        if config.use_cache and config.cache_max_age_days > 0:
+            _prune_cache(config.resolved_cache_dir, config.cache_max_age_days)
 
     @property
     def device(self) -> str:
@@ -127,6 +164,8 @@ class WhisperEngine:
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
+        if self._on_model_loading is not None:
+            self._on_model_loading()
         try:
             self._model = self._load(self._device, self._compute_type)
             return
@@ -217,7 +256,15 @@ class WhisperEngine:
         audio_path: Path,
         progress_callback: Callable[[float], None] | None = None,
     ) -> Transcript:
-        key = self._cache_key(audio_path, self.config)
+        # Cache lookup uses the RESOLVED device/compute_type (self._device /
+        # self._compute_type, resolved in __init__ from config.device/
+        # compute_type — cheap, no model load), not config.compute_type
+        # verbatim, which is often the literal string "auto". Two runs on
+        # different hardware that both had compute_type="auto" used to collide
+        # on the same cache key despite producing different transcripts. This
+        # lookup intentionally happens BEFORE _ensure_model() so a cache hit
+        # still avoids loading the model at all. See PROJECT_ANALYSIS.md §2.7.
+        key = self._cache_key(audio_path, self.config, self._device, self._compute_type)
         cache_file = self._cache_path(self.config.resolved_cache_dir, key)
         if self.config.use_cache:
             cached = self._load_cache(cache_file)
@@ -259,11 +306,19 @@ class WhisperEngine:
             segments=segments,
         )
         if self.config.use_cache:
-            self._save_cache(cache_file, transcript)
+            # Re-derive the key in case an in-flight OOM fallback changed
+            # device/compute_type after the lookup above, so the saved cache
+            # entry is keyed by what actually produced this transcript.
+            final_key = self._cache_key(audio_path, self.config, self._device, self._compute_type)
+            self._save_cache(
+                self._cache_path(self.config.resolved_cache_dir, final_key), transcript
+            )
         return transcript
 
     @staticmethod
-    def _cache_key(audio_path: Path, config: WhisperSyncConfig) -> str:
+    def _cache_key(
+        audio_path: Path, config: WhisperSyncConfig, device: str, compute_type: str
+    ) -> str:
         stat = audio_path.stat()
         parts = "|".join(
             [
@@ -271,7 +326,8 @@ class WhisperEngine:
                 str(stat.st_size),
                 str(stat.st_mtime),
                 config.model,
-                config.compute_type,
+                device,
+                compute_type,
                 config.language or "",
                 str(config.vad_filter),
                 # decoding params that change the transcript

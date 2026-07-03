@@ -1,18 +1,13 @@
-"""WhisperSync entry point: GUI by default, --cli for headless mode."""
+"""Thin shim so `python main.py` works from a checkout; see whispersync/app.py."""
 
-import sys
+import multiprocessing
 
-
-def main() -> None:
-    if "--cli" in sys.argv:
-        from whispersync.cli import main as cli_main
-
-        cli_main()
-    else:
-        from whispersync.gui.main_window import main as gui_main
-
-        gui_main()
-
+from whispersync.app import main
 
 if __name__ == "__main__":
+    # Required for PyInstaller builds now that the render pool may use
+    # spawn/forkserver (see pipeline._pool_context): a frozen child process
+    # re-runs this entry module and must hand control to multiprocessing
+    # instead of launching a second GUI. No-op in a normal interpreter.
+    multiprocessing.freeze_support()
     main()

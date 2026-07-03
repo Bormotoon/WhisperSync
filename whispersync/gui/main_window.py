@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, Qt, QThread
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QMessageLogContext,
+    QPropertyAnimation,
+    QSettings,
+    Qt,
+    QThread,
+    QtMsgType,
+    QUrl,
+    qInstallMessageHandler,
+)
+from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -22,6 +33,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSlider,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -33,6 +45,7 @@ from whispersync.config import WhisperSyncConfig
 from whispersync.gui.widgets.drop_zone import DropZone
 from whispersync.gui.widgets.help_page import HelpPage
 from whispersync.gui.widgets.log_view import LogView
+from whispersync.gui.widgets.settings_dialog import SettingsDialog
 from whispersync.gui.widgets.timeline_preview import TimelinePreview
 from whispersync.gui.worker import SyncWorker
 
@@ -92,15 +105,32 @@ class MainWindow(QMainWindow):
         audio_group = QGroupBox("Recorder Audio")
         audio_layout = QVBoxLayout(audio_group)
         self.audio_drop = DropZone(
-            placeholder="Drop audio file here",
+            placeholder="Drop audio file(s) here",
             accept_dirs=False,
+            accept_multiple=True,
             accepted_extensions=self.config.audio_exts,
         )
         self.audio_drop.path_dropped.connect(self._on_audio_dropped)
+        self.audio_drop.paths_dropped.connect(self._on_audio_paths_dropped)
         audio_layout.addWidget(self.audio_drop)
         self.btn_browse_audio = QPushButton("Browse...")
         self.btn_browse_audio.clicked.connect(self._browse_audio)
         audio_layout.addWidget(self.btn_browse_audio)
+        # Only meaningful with 2+ recorders: "best" keeps one audio lane per
+        # clip (the strongest-matching recorder); "all" puts every recorder on
+        # its own lane, for multi-mic/multi-speaker setups.
+        self.recorder_mode_combo = QComboBox()
+        self.recorder_mode_combo.addItems(["best", "all"])
+        self.recorder_mode_combo.setCurrentText(self.config.recorder_mode)
+        self.recorder_mode_combo.setEnabled(False)
+        self.recorder_mode_combo.setToolTip(
+            "best = one audio lane, strongest recorder per clip. "
+            "all = every recorder on its own lane (multi-mic/multi-speaker)."
+        )
+        recorder_mode_row = QHBoxLayout()
+        recorder_mode_row.addWidget(QLabel("Recorder mode:"))
+        recorder_mode_row.addWidget(self.recorder_mode_combo, stretch=1)
+        audio_layout.addLayout(recorder_mode_row)
         left_layout.addWidget(audio_group)
 
         output_group = QGroupBox("Output Folder")
@@ -121,10 +151,14 @@ class MainWindow(QMainWindow):
         strategy_layout = QVBoxLayout(strategy_group)
         self.radio1 = QRadioButton("1 — Global Linear Calibration")
         self.radio2 = QRadioButton("2 — Local Time-Stretch")
-        self.radio3 = QRadioButton("3 — Silence Padding (pitch-safe)")
-        self.radio4 = QRadioButton("4 — Hybrid (Global + Silence)")
-        self.radio1.setChecked(True)
-        for r in (self.radio1, self.radio2, self.radio3, self.radio4):
+        self.radio3 = QRadioButton("3 — Hybrid (Global + Silence)  ·  recommended")
+        strategy_radios = {1: self.radio1, 2: self.radio2, 3: self.radio3}
+        # config.default_strategy is the single source of truth for the default
+        # (the CLI's --strategy default reads the same field) — see
+        # PROJECT_ANALYSIS.md §4.4. (The old strategy 3, "Silence Padding", was
+        # merged into Hybrid — see §2.1.)
+        strategy_radios[self.config.default_strategy].setChecked(True)
+        for r in (self.radio1, self.radio2, self.radio3):
             r.setMinimumHeight(26)  # never let the label clip vertically
             r.toggled.connect(self._on_strategy_changed)
             strategy_layout.addWidget(r)
@@ -138,7 +172,74 @@ class MainWindow(QMainWindow):
         self.crossfade_check = QCheckBox("Crossfade segment seams (declick)")
         self.crossfade_check.setChecked(self.config.crossfade_enabled)
         options_layout.addRow(self.crossfade_check)
+
+        # Boundary Flex — acoustic sub-frame refinement. config.boundary_flex is
+        # the single source of truth for the default (see PROJECT_ANALYSIS.md
+        # §4.4); on by default for the best lip-sync out of the box, costs a
+        # little extra processing.
+        self.flex_check = QCheckBox("Boundary Flex (acoustic sub-frame lip-sync)")
+        self.flex_check.setChecked(self.config.boundary_flex)
+        self.flex_check.setToolTip(
+            "Fine-tune each phrase's position by cross-correlating the camera and "
+            "recorder audio, so lips and sound match to within a frame."
+        )
+        options_layout.addRow(self.flex_check)
+
+        # Pause ducking — attenuate inter-phrase pauses to hide ambience desync.
+        self.duck_check = QCheckBox("Duck pauses (hide ambience desync)")
+        self.duck_check.setChecked(self.config.pause_duck_enabled)
+        self.duck_check.setToolTip(
+            "Lower the volume during pauses between phrases so a slightly mis-synced "
+            "room tone in the gaps is inaudible."
+        )
+        self.duck_check.toggled.connect(self._on_duck_toggled)
+        options_layout.addRow(self.duck_check)
+
+        # dB slider: 0 dB (off) … -60 dB (treated as silence). Shown only as enabled
+        # when ducking is on. Step of 1 dB; label shows the live value (or −∞).
+        self.duck_slider = QSlider(Qt.Orientation.Horizontal)
+        self.duck_slider.setRange(-60, 0)  # -60 == full silence (−∞), 0 == no change
+        self.duck_slider.setSingleStep(1)
+        self.duck_slider.setPageStep(3)
+        self.duck_slider.setValue(int(self.config.pause_duck_db))
+        self.duck_slider.valueChanged.connect(self._on_duck_db_changed)
+        self.duck_slider.setEnabled(self.duck_check.isChecked())
+        self.duck_value = QLabel(self._duck_db_text(int(self.config.pause_duck_db)))
+        duck_db_row = QHBoxLayout()
+        duck_db_row.addWidget(self.duck_slider, stretch=1)
+        duck_db_row.addWidget(self.duck_value)
+        self.duck_db_label = QLabel("Pause level:")
+        options_layout.addRow(self.duck_db_label, duck_db_row)
+        self.duck_db_label.setEnabled(self.duck_check.isChecked())
+
+        # Ambience track — strip the camera's own voice, keep the room tone, on its
+        # own lane (needs the separate .sep-venv environment). Off by default.
+        self.ambience_check = QCheckBox("Add camera-ambience track (no doubled voice)")
+        self.ambience_check.setChecked(self.config.ambience_track)
+        # Disabled with an explanatory tooltip when .sep-venv isn't set up,
+        # instead of letting the user enable it and only finding out via a
+        # warning at the end of a run. See PROJECT_ANALYSIS.md §7.4.
+        from whispersync.engine import separation
+
+        repo_root = Path(__file__).resolve().parents[2]
+        if separation.is_available(repo_root):
+            self.ambience_check.setToolTip(
+                "Run AI source separation on the camera audio to remove its own (echoey) "
+                "voice while keeping the ambience, on a separate lane."
+            )
+        else:
+            self.ambience_check.setEnabled(False)
+            self.ambience_check.setToolTip(
+                "Requires the '.sep-venv' environment, which is not set up. "
+                "Run setup_sep_venv.sh to enable this feature."
+            )
+        options_layout.addRow(self.ambience_check)
+
         left_layout.addWidget(options_group)
+
+        self.btn_settings = QPushButton("Transcription Settings...")
+        self.btn_settings.clicked.connect(self._open_settings_dialog)
+        left_layout.addWidget(self.btn_settings)
 
         self.btn_sync = QPushButton("SYNC")
         self.btn_sync.setObjectName("primaryButton")
@@ -180,6 +281,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
         progress_layout.addWidget(self.progress_bar)
+        # Smoothly tween the bar to each new value instead of snapping — small touch
+        # that makes progress feel continuous rather than steppy.
+        self._progress_anim = QPropertyAnimation(self.progress_bar, b"value")
+        self._progress_anim.setDuration(220)
+        self._progress_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         right_layout.addWidget(progress_group)
 
         result_group = QGroupBox("Results")
@@ -204,6 +310,17 @@ class MainWindow(QMainWindow):
         self.btn_open_folder.setEnabled(False)
         self.btn_open_folder.clicked.connect(self._open_output_folder)
         result_layout.addWidget(self.btn_open_folder)
+        # Re-running only changes strategy_id; transcripts are cached
+        # (config.use_cache), so a re-run skips straight to alignment/render
+        # instead of re-transcribing every recorder/clip from scratch.
+        self.btn_rerun = QPushButton("Re-run with Selected Strategy")
+        self.btn_rerun.setEnabled(False)
+        self.btn_rerun.setToolTip(
+            "Re-run using the currently selected strategy above. Transcripts are "
+            "cached, so this skips straight to alignment/render."
+        )
+        self.btn_rerun.clicked.connect(self._start_sync)
+        result_layout.addWidget(self.btn_rerun)
         right_layout.addWidget(result_group)
 
         log_group = QGroupBox("Log")
@@ -247,7 +364,9 @@ class MainWindow(QMainWindow):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
         for rb in self.findChildren(QRadioButton):
             rb.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.crossfade_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        for cb in self.findChildren(QCheckBox):
+            cb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.duck_slider.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self._on_strategy_changed()
 
@@ -256,12 +375,32 @@ class MainWindow(QMainWindow):
             return 2
         if self.radio3.isChecked():
             return 3
-        if self.radio4.isChecked():
-            return 4
         return 1
 
     def _on_strategy_changed(self) -> None:
         self.help_page.set_strategy(self._get_strategy_id())
+
+    def _open_settings_dialog(self) -> None:
+        dialog = SettingsDialog(self.config, self)
+        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+            self.config = dialog.apply_to(self.config)
+            self.log_view.append_log(
+                f"Transcription settings updated: model={self.config.model}, "
+                f"device={self.config.device}, mode={self.config.transcribe_mode}"
+            )
+
+    @staticmethod
+    def _duck_db_text(db: int) -> str:
+        # The slider floor is treated as full silence.
+        return "−∞ dB" if db <= -60 else f"{db:+d} dB" if db != 0 else "0 dB (off)"
+
+    def _on_duck_toggled(self, on: bool) -> None:
+        self.duck_slider.setEnabled(on)
+        self.duck_db_label.setEnabled(on)
+        self.duck_value.setEnabled(on)
+
+    def _on_duck_db_changed(self, value: int) -> None:
+        self.duck_value.setText(self._duck_db_text(value))
 
     def _on_video_dropped(self, path: str) -> None:
         self.settings.setValue("last_video_dir", path)
@@ -271,6 +410,11 @@ class MainWindow(QMainWindow):
     def _on_audio_dropped(self, path: str) -> None:
         self.settings.setValue("last_audio_file", path)
         self.log_view.append_log(f"Audio file: {path}")
+
+    def _on_audio_paths_dropped(self, paths: list) -> None:
+        self.recorder_mode_combo.setEnabled(len(paths) > 1)
+        if len(paths) > 1:
+            self.log_view.append_log(f"{len(paths)} recorder audio files selected")
 
     def _on_output_dropped(self, path: str) -> None:
         self._output_user_set = True
@@ -290,11 +434,13 @@ class MainWindow(QMainWindow):
 
     def _browse_audio(self) -> None:
         exts = " ".join(f"*{e}" for e in self.config.audio_exts)
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Audio File", "", f"Audio Files ({exts})"
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Audio File(s)", "", f"Audio Files ({exts})"
         )
-        if path:
-            self.audio_drop.set_path(path)
+        if paths:
+            self.audio_drop.set_paths(paths)
+            self._on_audio_dropped(paths[0])
+            self._on_audio_paths_dropped(paths)
 
     def _browse_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Output Folder")
@@ -304,13 +450,13 @@ class MainWindow(QMainWindow):
 
     def _start_sync(self) -> None:
         video_path = self.video_drop.current_path
-        audio_path = self.audio_drop.current_path
+        audio_paths = self.audio_drop.current_paths
 
         if not video_path or not Path(video_path).is_dir():
             QMessageBox.warning(self, "Error", "Please select a video folder.")
             return
-        if not audio_path or not Path(audio_path).is_file():
-            QMessageBox.warning(self, "Error", "Please select an audio file.")
+        if not audio_paths or not all(Path(p).is_file() for p in audio_paths):
+            QMessageBox.warning(self, "Error", "Please select at least one audio file.")
             return
 
         # Output goes to the chosen folder, or next to the sources by default.
@@ -323,20 +469,38 @@ class MainWindow(QMainWindow):
         output_path = output_dir / "sync_output.fcpxml"
 
         strategy_id = self._get_strategy_id()
-        self.config.timebase_source = self.timebase_combo.currentText()
-        self.config.crossfade_enabled = self.crossfade_check.isChecked()
+        # A copy, not self.config mutated in place: self.config is also read by
+        # the UI (e.g. re-opening file dialogs), and the pipeline runs on a
+        # background thread — if the user toggles a checkbox while a run is in
+        # flight, mutating the shared object would change settings out from
+        # under the running pipeline mid-run. See PROJECT_ANALYSIS.md §4.5.
+        db = self.duck_slider.value()
+        # Slider floor (-60) means full silence; map it to a very negative dB so
+        # the ducking filter zeroes the gain (duck_filter_chain treats <= -120
+        # as 0).
+        run_config = dataclasses.replace(
+            self.config,
+            timebase_source=self.timebase_combo.currentText(),
+            crossfade_enabled=self.crossfade_check.isChecked(),
+            boundary_flex=self.flex_check.isChecked(),
+            pause_duck_enabled=self.duck_check.isChecked(),
+            pause_duck_db=-200.0 if db <= -60 else float(db),
+            ambience_track=self.ambience_check.isChecked(),
+            recorder_mode=self.recorder_mode_combo.currentText(),
+        )
 
         self.right_tabs.setCurrentIndex(0)  # show the Run tab during processing
         self.btn_sync.setEnabled(False)
+        self.btn_rerun.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.progress_bar.setValue(0)
         self.log_view.clear_log()
         self.log_view.append_log(f"Starting sync with Strategy {strategy_id}...")
 
         self._worker = SyncWorker(
-            config=self.config,
+            config=run_config,
             video_dir=Path(video_path),
-            audio_files=[Path(audio_path)],
+            audio_files=[Path(p) for p in audio_paths],
             strategy_id=strategy_id,
             output_path=output_path,
         )
@@ -361,7 +525,15 @@ class MainWindow(QMainWindow):
             self.log_view.append_log("Cancellation requested...", "WARNING")
 
     def _on_progress(self, value: int) -> None:
-        self.progress_bar.setValue(value)
+        # Animate toward the new value (skip the tween for resets to 0).
+        if value <= 0:
+            self._progress_anim.stop()
+            self.progress_bar.setValue(0)
+            return
+        self._progress_anim.stop()
+        self._progress_anim.setStartValue(self.progress_bar.value())
+        self._progress_anim.setEndValue(value)
+        self._progress_anim.start()
 
     def _on_stage(self, stage: str) -> None:
         self.stage_label.setText(stage)
@@ -370,7 +542,7 @@ class MainWindow(QMainWindow):
     def _on_finished(self, result: object) -> None:
         self.btn_sync.setEnabled(True)
         self.btn_cancel.setEnabled(False)
-        self.progress_bar.setValue(100)
+        self._on_progress(100)
         self.stage_label.setText("Done!")
 
         from whispersync.models import SyncResult
@@ -384,8 +556,16 @@ class MainWindow(QMainWindow):
                 f"{'Output':<9}{result.fcpxml_path}"
             )
             self.btn_open_folder.setEnabled(True)
+            self.btn_rerun.setEnabled(True)
             self._output_path = result.fcpxml_path.parent
             # The timeline is kept live via the worker's `timeline` signal.
+
+            # Pipeline warnings (unaligned clips, high residual, strategy
+            # advice, FCPXML validation failures, ...) previously only reached
+            # the user via the CLI printout — the GUI silently dropped them.
+            # See PROJECT_ANALYSIS.md §7.6.
+            for warning in result.warnings:
+                self.log_view.append_log(warning, "WARNING")
 
         self.log_view.append_log("Sync complete!", "INFO")
         self.status_bar.showMessage("Sync complete!")
@@ -399,10 +579,11 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Sync Error", msg)
 
     def _open_output_folder(self) -> None:
+        # QDesktopServices.openUrl is the cross-platform way to reveal a folder
+        # (xdg-open only exists on Linux; Windows/macOS need explorer/open) — see
+        # PROJECT_ANALYSIS.md §3.1.
         if hasattr(self, "_output_path"):
-            import subprocess
-
-            subprocess.Popen(["xdg-open", str(self._output_path)])
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._output_path)))
 
     def _restore_state(self) -> None:
         last_video = self.settings.value("last_video_dir", "")
@@ -422,7 +603,29 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
+def _install_quiet_message_handler() -> None:
+    """Drop one benign Qt warning, pass everything else through unchanged.
+
+    On headless / portal-less GNOME, Qt probes ``org.freedesktop.portal.Settings``
+    for the system theme; when that portal isn't running it prints
+    "Call to org.freedesktop.portal.Settings.ReadAll failed …". It's emitted by an
+    unconditional ``qWarning`` (not a logging category), so ``QT_LOGGING_RULES``
+    can't mute it — a message handler is the only hook. We ship our own theme, so
+    the missing portal changes nothing.
+    """
+
+    def handler(mode: QtMsgType, context: QMessageLogContext, message: str | None) -> None:
+        if message and "org.freedesktop.portal" in message:
+            return
+        if message:
+            print(message, file=sys.stderr)
+
+    qInstallMessageHandler(handler)
+
+
 def main() -> None:
+    _install_quiet_message_handler()
+
     app = QApplication(sys.argv)
 
     # Modern UI font stack with explicit anti-aliasing; falls back gracefully

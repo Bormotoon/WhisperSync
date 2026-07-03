@@ -7,13 +7,16 @@ from pathlib import Path
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.matcher import (
     align,
+    build_recorder_index,
     estimate_coarse_delta,
     find_anchors,
     normalize_token,
     normalize_words,
+    recommend_strategy,
     reject_gross_outliers,
+    reject_residual_outliers,
 )
-from whispersync.models import Anchor, Segment, Transcript, Word
+from whispersync.models import AlignmentMap, Anchor, Segment, Transcript, Word
 
 
 def test_reject_gross_outliers_keeps_smooth_drift() -> None:
@@ -30,6 +33,65 @@ def test_reject_gross_outliers_keeps_smooth_drift() -> None:
 
     assert bad not in kept
     assert len(kept) >= 38  # every smooth-drift anchor survives
+
+
+def test_reject_gross_outliers_adaptive_window_on_short_lists() -> None:
+    # A short clip (e.g. 12 anchors) used to skip the filter entirely (it
+    # required >= 2*window=20 anchors) — a single 5s-off outlier would ride
+    # straight through. The window now shrinks instead of disabling the check.
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(12)
+    ]
+    bad = Anchor(cam_time=anchors[6].cam_time + 5.0, rec_time=6.0, token="x", confidence=0.9)
+    anchors[6] = bad
+
+    kept = reject_gross_outliers(anchors, window=10, tol_s=0.3)
+    assert bad not in kept
+    assert len(kept) == 11
+
+
+def test_reject_gross_outliers_too_short_is_a_noop() -> None:
+    # Fewer than 4 anchors: not enough signal to judge a "local neighbourhood",
+    # so nothing is dropped (matches the old behaviour for tiny lists).
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(3)
+    ]
+    assert reject_gross_outliers(anchors) == anchors
+
+
+def test_reject_residual_outliers_drops_isolated_mismatch() -> None:
+    # Anchors exactly on the line offset=0, k=1, except one anchor 2s off.
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(10)
+    ]
+    bad = Anchor(cam_time=anchors[5].cam_time + 2.0, rec_time=5.0, token="x", confidence=0.9)
+    anchors[5] = bad
+
+    kept = reject_residual_outliers(anchors, offset=0.0, k=1.0)
+    assert bad not in kept
+    assert len(kept) == 9
+
+
+def test_reject_residual_outliers_keeps_uniformly_noisy_alignment() -> None:
+    # All anchors modestly (but consistently) off the line — no single anchor
+    # stands out relative to the others, so nothing should be dropped.
+    anchors = [
+        Anchor(cam_time=float(t) + 0.05, rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(10)
+    ]
+    kept = reject_residual_outliers(anchors, offset=0.0, k=1.0)
+    assert len(kept) == len(anchors)
+
+
+def test_reject_residual_outliers_too_short_is_a_noop() -> None:
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(3)
+    ]
+    assert reject_residual_outliers(anchors, offset=0.0, k=1.0) == anchors
 
 
 def _make_transcript(
@@ -52,6 +114,17 @@ def test_normalize_token() -> None:
     assert normalize_token("Hello!") == "hello"
     assert normalize_token("  World,  ") == "world"
     assert normalize_token("...") == ""
+
+
+def test_normalize_token_strips_unicode_punctuation() -> None:
+    # string.punctuation (the old implementation) only covers ASCII, so
+    # Russian/typographic marks like the guillemets, em dash and ellipsis used
+    # to survive normalization and silently break anchor matching on Russian
+    # audio (PROJECT_ANALYSIS.md §2 / matcher.py). Both the token's own
+    # punctuation and the surrounding marks must be gone.
+    assert normalize_token("«Привет,") == "привет"
+    assert normalize_token("дом—мама") == "доммама"
+    assert normalize_token("вот…") == "вот"
 
 
 def test_find_anchors_basic() -> None:
@@ -188,6 +261,78 @@ def test_align_windowed_on_long_recorder() -> None:
     cfg = WhisperSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
     result = align(cam_t, rec_t, cfg)
     assert abs(result.k - true_k) < 0.002
-    # the clip's local 0 must map back to recorder t≈2400
-    assert abs(result.rec_to_cam(clip_offset)) < 0.5
+    # the clip's local 0 must map back to recorder t≈2400: t_cam = offset + k*t_rec
+    assert abs(result.offset + result.k * clip_offset) < 0.5
     assert len(result.anchors) >= 10
+
+
+def test_align_with_prebuilt_recorder_index_matches_on_the_fly() -> None:
+    # A pre-built RecorderIndex (reused across clips aligned against the same
+    # recorder — PROJECT_ANALYSIS.md §6.5) must give the identical result to
+    # letting align() build its own index internally.
+    clip_tokens = [f"anchorword{i:03d}" for i in range(20)]
+    clip_offset, true_k = 2400.0, 1.0008
+    cam_t, rec_t = _long_recorder_with_clip(
+        clip_tokens, clip_offset_in_rec=clip_offset, total_rec_minutes=80.0, true_k=true_k
+    )
+    cfg = WhisperSyncConfig(min_anchors=5, anchor_min_confidence=0.5)
+    baseline = align(cam_t, rec_t, cfg)
+
+    rec_index = build_recorder_index(normalize_words(list(rec_t.words), 0.5), cfg)
+    with_index = align(cam_t, rec_t, cfg, rec_index)
+
+    assert with_index.offset == baseline.offset
+    assert with_index.k == baseline.k
+    assert len(with_index.anchors) == len(baseline.anchors)
+
+
+# --- recommend_strategy -------------------------------------------------------
+
+
+def test_recommend_strategy_low_residual_is_global_linear() -> None:
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(10)
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
+    sid, reason = recommend_strategy(am)
+    assert sid == 1
+    assert "linear" in reason
+
+
+def test_recommend_strategy_nonlinear_local_drift_suggests_strategy_2() -> None:
+    # Anchors whose LOCAL pairwise rate wobbles a lot even though a single
+    # global line still fits reasonably (residual just above the linear
+    # threshold) -> the non-linearity signal should win over strategy 3.
+    anchors = [
+        Anchor(cam_time=0.0, rec_time=0.0, token="a", confidence=0.9),
+        Anchor(cam_time=1.0, rec_time=1.0, token="b", confidence=0.9),  # rate 1.0
+        Anchor(cam_time=3.0, rec_time=2.0, token="c", confidence=0.9),  # rate 2.0
+        Anchor(cam_time=3.5, rec_time=3.0, token="d", confidence=0.9),  # rate 0.5
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=20.0)
+    sid, reason = recommend_strategy(am)
+    assert sid == 2
+    assert "non-linear" in reason
+
+
+def test_recommend_strategy_high_residual_smooth_drift_suggests_strategy_3() -> None:
+    # Uniformly elevated residual but no local-rate wobble -> per-phrase
+    # correction (strategy 3), not per-segment (strategy 2).
+    anchors = [
+        Anchor(cam_time=float(t) * 1.05, rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(10)
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.05, residual_ms=25.0)
+    sid, reason = recommend_strategy(am)
+    assert sid == 3
+
+
+def test_recommend_strategy_too_few_anchors_skips_nonlinearity_check() -> None:
+    anchors = [
+        Anchor(cam_time=0.0, rec_time=0.0, token="a", confidence=0.9),
+        Anchor(cam_time=5.0, rec_time=1.0, token="b", confidence=0.9),
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=30.0)
+    sid, _reason = recommend_strategy(am)
+    assert sid == 3  # falls through to the phrase-correction default

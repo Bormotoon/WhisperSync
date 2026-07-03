@@ -10,7 +10,6 @@ import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from urllib.parse import quote
 
 
 @dataclass
@@ -24,9 +23,19 @@ class MediaInfo:
     audio_codec: str | None
     audio_channels: int | None
     audio_sample_rate: int | None
+    # Sample format as reported by ffprobe (e.g. "s16", "s32", "fltp") and its bit
+    # depth, when known. Used to pick a lossless PCM codec for rendered audio that
+    # matches (or safely exceeds) the source, instead of hard-coding 16-bit.
+    audio_sample_fmt: str | None = None
+    audio_bits_per_sample: int | None = None
 
 
-def probe(path: Path) -> MediaInfo:
+def probe(path: Path, timeout: float = 30.0) -> MediaInfo:
+    """Read duration/fps/codecs/etc via ffprobe. ``timeout`` (seconds) is
+    configurable — the default is generous for local files, but a clip on
+    network/NAS storage can legitimately take longer to respond. See
+    PROJECT_ANALYSIS.md §6.6.
+    """
     cmd = [
         "ffprobe",
         "-v",
@@ -37,7 +46,7 @@ def probe(path: Path) -> MediaInfo:
         "-show_streams",
         str(path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe failed for {path}: {result.stderr}")
 
@@ -88,12 +97,20 @@ def probe(path: Path) -> MediaInfo:
     audio_codec: str | None = None
     audio_channels: int | None = None
     audio_sample_rate: int | None = None
+    audio_sample_fmt: str | None = None
+    audio_bits_per_sample: int | None = None
 
     if audio_stream:
         audio_codec = audio_stream.get("codec_name")
         audio_channels = int(audio_stream.get("channels", 0)) or None
         sr = audio_stream.get("sample_rate")
         audio_sample_rate = int(sr) if sr else None
+        audio_sample_fmt = audio_stream.get("sample_fmt") or None
+        # bits_per_raw_sample is the true source depth (e.g. 24-bit in a 32-bit
+        # container); bits_per_sample is the container's storage width. Prefer the
+        # raw value when ffprobe reports it.
+        bps = audio_stream.get("bits_per_raw_sample") or audio_stream.get("bits_per_sample")
+        audio_bits_per_sample = int(bps) if bps and str(bps).isdigit() and int(bps) > 0 else None
 
     return MediaInfo(
         path=path,
@@ -105,6 +122,8 @@ def probe(path: Path) -> MediaInfo:
         audio_codec=audio_codec,
         audio_channels=audio_channels,
         audio_sample_rate=audio_sample_rate,
+        audio_sample_fmt=audio_sample_fmt,
+        audio_bits_per_sample=audio_bits_per_sample,
     )
 
 
@@ -141,10 +160,80 @@ def extract_audio_to_wav(
     return output_path
 
 
+def extract_audio_master(
+    input_path: Path,
+    output_path: Path,
+    sample_rate: int,
+    channels: int,
+    codec: str,
+) -> Path:
+    """Transcode a recorder file to lossless PCM WAV, once, for the render path.
+
+    Cutting pieces directly from a lossy source (mp3/m4a) with ``-ss`` before
+    ``-i`` is not sample-accurate (seek lands on a frame boundary, ~26ms for
+    mp3), and re-decoding a lossy file on every cut compounds artifacts. This
+    produces a single PCM master at the render's target sample rate and native
+    channel count so every downstream cut/concat operates on identical,
+    sample-accurate, uncompressed audio. Uses the highest-quality resampler
+    ffmpeg ships (soxr) when available, falling back to swr.
+    """
+    resamplers = ("soxr", "swr")
+    last_stderr = ""
+    for i, resampler in enumerate(resamplers):
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
+            "-vn",
+            "-af",
+            f"aresample=resampler={resampler}",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(channels),
+            "-acodec",
+            codec,
+            str(output_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        if result.returncode == 0:
+            return output_path
+        last_stderr = result.stderr
+        if i < len(resamplers) - 1:
+            # This ffmpeg build may lack libsoxr (or some other resampler-specific
+            # issue); retry with the next resampler rather than parsing stderr text,
+            # which varies across ffmpeg versions.
+            continue
+    raise RuntimeError(f"ffmpeg master extraction failed: {last_stderr}")
+
+
+def pcm_codec_for_bit_depth(bits_per_sample: int | None) -> str:
+    """Lossless PCM codec that matches (or safely covers) a source bit depth.
+
+    Rendering everything through 16-bit PCM regardless of source depth throws
+    away real resolution from 24-/32-bit recorders and adds a fresh quantization
+    step at every intermediate render stage. ``None`` (unknown depth, or a lossy
+    source codec ffprobe can't report PCM depth for) defaults to 24-bit, which
+    covers the vast majority of professional recorders without truncation.
+    """
+    if bits_per_sample is not None and bits_per_sample <= 16:
+        return "pcm_s16le"
+    if bits_per_sample is not None and bits_per_sample >= 32:
+        return "pcm_s32le"
+    return "pcm_s24le"
+
+
 def path_to_file_uri(path: Path) -> str:
-    absolute = path.resolve()
-    encoded = quote(str(absolute), safe="/:")
-    return f"file://{encoded}"
+    """A ``file://`` URI for ``path``, percent-encoded and platform-correct.
+
+    ``Path.as_uri()`` handles this properly cross-platform — notably on
+    Windows, where a hand-rolled ``f"file://{quote(str(path))}"`` would encode
+    backslashes as ``%5C`` instead of converting them to the forward slashes a
+    URI requires, producing a URI FCPXML/other tools can't resolve. See
+    PROJECT_ANALYSIS.md §3.1.
+    """
+    return path.resolve().as_uri()
 
 
 def build_atempo_chain(factor: float) -> list[str]:
