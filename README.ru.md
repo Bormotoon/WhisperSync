@@ -5,6 +5,7 @@
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![Code style](https://img.shields.io/badge/code%20style-black%20%7C%20ruff%20%7C%20mypy-000000)
+[![Donate](https://img.shields.io/badge/%E2%9D%A4-%D0%9F%D0%BE%D0%B4%D0%B4%D0%B5%D1%80%D0%B6%D0%B0%D1%82%D1%8C%20%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82-E53935)](https://dalink.to/bormotoon)
 
 [English](README.md) · **Русский**
 
@@ -36,6 +37,7 @@
 - [Troubleshooting](#troubleshooting)
 - [Архитектура](#архитектура)
 - [Разработка и контрибьюции](#разработка-и-контрибьюции)
+- [Поддержать проект](#поддержать-проект)
 - [Лицензия](#лицензия)
 - [Благодарности](#благодарности)
 
@@ -514,6 +516,12 @@ pytest -m integration       # интеграционные тесты с ffmpeg
 ```
 
 CI гоняет тот же набор на Python 3.10–3.14 (зависимости зафиксированы lock-файлом на 3.12).
+
+## Поддержать проект
+
+WhisperSync бесплатен для некоммерческого использования и делается в свободное время. Если он экономит вам часы ручной синхронизации — поддержите разработку:
+
+[![Поддержать WhisperSync — угостить автора кофе](docs/images/donate_banner.png)](https://dalink.to/bormotoon)
 
 ## Лицензия
 

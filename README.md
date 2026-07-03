@@ -5,6 +5,7 @@
 ![License](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![Code style](https://img.shields.io/badge/code%20style-black%20%7C%20ruff%20%7C%20mypy-000000)
+[![Donate](https://img.shields.io/badge/%E2%9D%A4-Support%20the%20project-E53935)](https://dalink.to/bormotoon)
 
 **English** · [Русский](README.ru.md)
 
@@ -36,6 +37,7 @@ Using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2),
 - [Troubleshooting](#troubleshooting)
 - [Architecture](#architecture)
 - [Development & Contributing](#development--contributing)
+- [Support the Project](#support-the-project)
 - [License](#license)
 - [Acknowledgements](#acknowledgements)
 
@@ -514,6 +516,12 @@ pytest -m integration       # ffmpeg-backed integration tests
 ```
 
 CI runs the same suite on Python 3.10–3.14 (dependencies locked on 3.12 for reproducibility).
+
+## Support the Project
+
+WhisperSync is free for noncommercial use and built in the author's spare time. If it saves you hours of manual syncing, consider supporting development:
+
+[![Support WhisperSync — buy the author a coffee](docs/images/donate_banner.png)](https://dalink.to/bormotoon)
 
 ## License
 
