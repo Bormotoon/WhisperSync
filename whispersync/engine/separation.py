@@ -49,6 +49,45 @@ def _expected_output(out_dir: Path, input_path: Path, model_filename: str) -> Pa
     return out_dir / f"{input_path.stem}_({_STEM})_{model_stem}.wav"
 
 
+def _normalized_base(name: str) -> str:
+    """A filename base suitable for matching separator outputs to inputs.
+
+    audio-separator builds output names as "<base>_(<Stem>)_<model>.wav" but
+    normalizes the input's base first — observed in the field: a temp file
+    named ``tmpsj40fum_.wav`` produced ``tmpsj40fum_(Instrumental)_...`` (the
+    trailing underscore swallowed), which the old exact/glob prediction could
+    never match. Strip trailing separator characters from both sides of the
+    comparison instead of trying to predict the separator's exact escaping.
+    """
+    return name.rstrip("_-. ").lower()
+
+
+def _find_output(out_dir: Path, input_path: Path, model_filename: str) -> Path | None:
+    """The separator's instrumental output for ``input_path``, or None.
+
+    Tries the exact predicted name first, then falls back to scanning the
+    output dir for a WAV whose part before "(<Stem>)" normalizes to the same
+    base as the input — exact normalized equality, so one input's stem being
+    a prefix of another's can't cross-match. Multiple survivors (e.g. stale
+    files from a previous run) resolve to the newest by mtime.
+    """
+    exact = _expected_output(out_dir, input_path, model_filename)
+    if exact.exists():
+        return exact
+    marker = f"({_STEM})"
+    want = _normalized_base(input_path.stem)
+    candidates = [
+        f
+        for f in out_dir.iterdir()
+        if f.suffix.lower() == ".wav"
+        and marker in f.name
+        and _normalized_base(f.name.split(marker, 1)[0]) == want
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def extract_ambience(
     camera_audio: Path,
     out_dir: Path,
@@ -125,19 +164,11 @@ def extract_ambience_batch(
 
     outputs: dict[Path, Path] = {}
     for camera_audio in camera_audios:
-        produced = _expected_output(out_dir, camera_audio, model_filename)
-        if not produced.exists():
-            # Some model-name variants get truncated in the filename; fall back
-            # to the newest matching instrumental WAV for this input's stem.
-            candidates = sorted(
-                out_dir.glob(f"{camera_audio.stem}_({_STEM})_*.wav"),
-                key=lambda p: p.stat().st_mtime,
+        produced = _find_output(out_dir, camera_audio, model_filename)
+        if produced is None:
+            raise RuntimeError(
+                f"Separator reported success but no instrumental output was found "
+                f"in {out_dir} for {camera_audio.name}."
             )
-            if not candidates:
-                raise RuntimeError(
-                    f"Separator reported success but no instrumental output was found "
-                    f"in {out_dir} for {camera_audio.name}."
-                )
-            produced = candidates[-1]
         outputs[camera_audio] = produced
     return outputs

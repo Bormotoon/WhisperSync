@@ -300,32 +300,58 @@ def test_recommend_strategy_low_residual_is_global_linear() -> None:
     assert "linear" in reason
 
 
-def test_recommend_strategy_nonlinear_local_drift_suggests_strategy_2() -> None:
-    # Anchors whose LOCAL pairwise rate wobbles a lot even though a single
-    # global line still fits reasonably (residual just above the linear
-    # threshold) -> the non-linearity signal should win over strategy 3.
-    anchors = [
-        Anchor(cam_time=0.0, rec_time=0.0, token="a", confidence=0.9),
-        Anchor(cam_time=1.0, rec_time=1.0, token="b", confidence=0.9),  # rate 1.0
-        Anchor(cam_time=3.0, rec_time=2.0, token="c", confidence=0.9),  # rate 2.0
-        Anchor(cam_time=3.5, rec_time=3.0, token="d", confidence=0.9),  # rate 0.5
+def test_recommend_strategy_nonlinear_drift_suggests_strategy_2() -> None:
+    # The clock ratio genuinely CHANGES between the clip's halves: K=1.0 for
+    # the first minute, K=1.02 for the second (20‰ apart — way past the 1‰
+    # gate). Both halves have plenty of anchors over a wide span, so the
+    # half-slopes are trustworthy.
+    first = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"a{t}", confidence=0.9)
+        for t in range(0, 61, 10)
     ]
-    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=20.0)
+    second = [
+        Anchor(cam_time=60.0 + (t - 60.0) * 1.02, rec_time=float(t), token=f"b{t}", confidence=0.9)
+        for t in range(70, 131, 10)
+    ]
+    am = AlignmentMap(anchors=first + second, offset=0.0, k=1.01, residual_ms=40.0)
     sid, reason = recommend_strategy(am)
     assert sid == 2
     assert "non-linear" in reason
 
 
 def test_recommend_strategy_high_residual_smooth_drift_suggests_strategy_3() -> None:
-    # Uniformly elevated residual but no local-rate wobble -> per-phrase
-    # correction (strategy 3), not per-segment (strategy 2).
+    # Uniformly elevated residual but a CONSTANT clock ratio across the whole
+    # clip -> per-phrase correction (strategy 3), not per-segment (2).
     anchors = [
-        Anchor(cam_time=float(t) * 1.05, rec_time=float(t), token=f"w{t}", confidence=0.9)
-        for t in range(10)
+        Anchor(cam_time=float(t) * 1.0005, rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in range(0, 121, 10)
     ]
-    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.05, residual_ms=25.0)
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0005, residual_ms=25.0)
     sid, reason = recommend_strategy(am)
     assert sid == 3
+
+
+def test_recommend_strategy_jittery_close_anchors_do_not_fake_nonlinearity() -> None:
+    # Regression for the field failure: densely spaced anchors with realistic
+    # word-timing jitter (±60 ms) used to explode the old consecutive-pair
+    # local-K heuristic into "spreads" of hundreds of ‰ and mis-recommend
+    # strategy 2 on essentially every recording. The half-slope fit must see
+    # through the jitter: the underlying rate here is a constant K=1.0.
+    import random
+
+    rng = random.Random(42)
+    anchors = [
+        Anchor(
+            cam_time=t + rng.uniform(-0.06, 0.06),
+            rec_time=t,
+            token=f"w{i}",
+            confidence=0.9,
+        )
+        for i, t in enumerate(x * 0.7 for x in range(180))  # an anchor every 0.7 s
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=30.0)
+    sid, _reason = recommend_strategy(am)
+    assert sid == 3  # noisy but constant-rate -> NOT "non-linear"
 
 
 def test_recommend_strategy_too_few_anchors_skips_nonlinearity_check() -> None:

@@ -34,3 +34,41 @@ def test_overall_progress_is_monotonic_across_stage_transitions() -> None:
 
 def test_overall_progress_unknown_stage_falls_back_to_raw() -> None:
     assert overall_progress("some_future_stage", 0.5) == 50
+
+
+def test_worker_logs_only_changed_messages() -> None:
+    # A stage that reuses the same message on every progress tick (dozens of
+    # ticks per transcribed clip) must produce ONE log line, not a flood —
+    # regression for the "[INFO] DJI_0829.MOV" x18 spam.
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from pathlib import Path
+
+    from PyQt6.QtWidgets import QApplication
+
+    from whispersync.config import WhisperSyncConfig
+    from whispersync.engine.pipeline import PipelineProgress
+    from whispersync.gui.worker import SyncWorker
+
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    worker = SyncWorker(
+        config=WhisperSyncConfig(),
+        video_dir=Path("/x"),
+        audio_files=[Path("/x/a.wav")],
+        strategy_id=3,
+        output_path=Path("/x/out.fcpxml"),
+    )
+    logged: list[str] = []
+    worker.log.connect(logged.append)
+
+    for prog in (0.1, 0.2, 0.3):
+        worker._on_progress(
+            PipelineProgress(stage="transcribing_camera", progress=prog, message="DJI_0829.MOV")
+        )
+    worker._on_progress(
+        PipelineProgress(stage="transcribing_camera", progress=0.4, message="DJI_0830.MOV")
+    )
+    worker._on_progress(PipelineProgress(stage="transcribing_camera", progress=0.5, message=""))
+
+    assert logged == ["DJI_0829.MOV", "DJI_0830.MOV"]

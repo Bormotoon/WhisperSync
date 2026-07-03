@@ -408,13 +408,36 @@ def align(
     )
 
 
-# Recommendation thresholds: below this residual, a single global tempo
-# conform already tracks the drift closely enough that per-segment
-# corrections wouldn't measurably improve sync. Above the non-linearity
-# threshold, the drift visibly bends within the clip (not just a constant
-# rate), which a single global K can't capture.
+# Recommendation thresholds. Below _AUTO_LINEAR_RESIDUAL_MS of residual, a
+# single global tempo conform already tracks the drift closely enough that
+# per-segment corrections wouldn't measurably improve sync. Non-linearity is
+# detected by fitting a SEPARATE least-squares clock ratio K to each half of
+# the clip's anchors: real crystal drift is constant-rate (both halves agree
+# within noise), so the halves' K disagreeing by more than
+# _AUTO_K_SPREAD_PERMILLE (1‰ = 1 ms of extra drift per second) means the
+# tempo genuinely bends within the clip. Half-fits are only trusted with
+# enough anchors spread over enough time — slopes over a short/thin half
+# amplify Whisper's ±50-100 ms word-timing jitter into nonsense. (The
+# previous heuristic compared CONSECUTIVE anchor pairs, where two anchors
+# half a second apart turn that jitter into local-K "spreads" of hundreds of
+# ‰, and its threshold had mismatched units — so it cried "non-linear" on
+# essentially every recording with residual above the linear gate.)
 _AUTO_LINEAR_RESIDUAL_MS = 15.0
-_AUTO_NONLINEARITY_MS = 60.0
+_AUTO_K_SPREAD_PERMILLE = 1.0
+_AUTO_MIN_HALF_ANCHORS = 4
+_AUTO_MIN_HALF_SPAN_S = 20.0
+
+
+def _half_slope(anchors: list[Anchor]) -> float | None:
+    """Least-squares clock ratio K over ``anchors``, or None when there are
+    too few of them / they span too little time for the slope to be trusted."""
+    if len(anchors) < _AUTO_MIN_HALF_ANCHORS:
+        return None
+    rec = np.array([a.rec_time for a in anchors])
+    cam = np.array([a.cam_time for a in anchors])
+    if float(rec.max() - rec.min()) < _AUTO_MIN_HALF_SPAN_S:
+        return None
+    return float(np.polyfit(rec, cam, 1)[0])
 
 
 def recommend_strategy(alignment: AlignmentMap) -> tuple[int, str]:
@@ -422,33 +445,26 @@ def recommend_strategy(alignment: AlignmentMap) -> tuple[int, str]:
 
     Looks at two signals a caller already paid for by calling ``align()``:
     the fitted line's residual (how well a single global K already explains
-    the anchors) and the local non-linearity (how much consecutive anchors'
-    pairwise drift disagrees with the global line — a smooth non-linear
-    drift shows up as a large spread here even with a low overall residual).
+    the anchors) and whether the clock ratio K genuinely changes between the
+    first and second half of the clip (see the threshold comment above).
     Returns ``(strategy_id, reason)``, where ``reason`` is a short
     human-readable justification suitable for a warning/log line. See
     PROJECT_ANALYSIS.md §10.1.
     """
-    anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
     if alignment.residual_ms <= _AUTO_LINEAR_RESIDUAL_MS:
         return 1, f"drift is linear (residual {alignment.residual_ms:.1f} ms)"
 
-    if len(anchors) >= 4:
-        # Local drift rate between consecutive anchor pairs, in the same units
-        # as K (dimensionless ratio) — how much does the clock ratio wobble
-        # across the clip, independent of the single global-line residual.
-        local_ks = [
-            (b.cam_time - a.cam_time) / (b.rec_time - a.rec_time)
-            for a, b in zip(anchors, anchors[1:], strict=False)
-            if b.rec_time > a.rec_time
-        ]
-        if local_ks:
-            spread = (max(local_ks) - min(local_ks)) * 1000.0  # ms/s-ish scale
-            if spread > _AUTO_NONLINEARITY_MS / 1000.0:
-                return (
-                    2,
-                    f"drift is non-linear (local rate spread {spread:.2f}‰, "
-                    f"residual {alignment.residual_ms:.1f} ms)",
-                )
+    anchors = sorted(alignment.anchors, key=lambda a: a.rec_time)
+    mid = len(anchors) // 2
+    k_first = _half_slope(anchors[:mid])
+    k_second = _half_slope(anchors[mid:])
+    if k_first is not None and k_second is not None:
+        spread = abs(k_second - k_first) * 1000.0  # ‰ (1‰ = 1 ms drift per second)
+        if spread > _AUTO_K_SPREAD_PERMILLE:
+            return (
+                2,
+                f"drift is non-linear (clock rate changes {spread:.2f}‰ "
+                f"between clip halves, residual {alignment.residual_ms:.1f} ms)",
+            )
 
     return 3, f"drift needs per-phrase correction (residual {alignment.residual_ms:.1f} ms)"

@@ -6,6 +6,31 @@ All notable changes to WhisperSync will be documented in this file.
 
 ### Fixed
 
+- **Ambience separation no longer fails on unlucky temp-file names.**
+  audio-separator normalizes the input's base name when building its output
+  name (observed: input `tmpsj40fum_.wav` → output
+  `tmpsj40fum_(Instrumental)_...`, trailing underscore swallowed), so the
+  exact-name prediction missed it and the whole batch was discarded with
+  "Separator reported success but no instrumental output was found".
+  Outputs are now matched by normalized base-name equality (exact, so a
+  stem that is a prefix of another can't cross-match), verified against the
+  real failed run's files.
+- **GUI log flooding during camera-clip transcription.** Every transcription
+  progress tick re-sent the clip's file name as a message, and the log
+  printed each one — dozens of identical `[INFO] DJI_0829.MOV` lines per
+  clip. Progress ticks now carry no message (the clip is announced once),
+  and the GUI worker additionally drops consecutive duplicate messages.
+- **Auto-strategy no longer cries "non-linear" on essentially every
+  recording.** The old heuristic compared clock rates between CONSECUTIVE
+  anchor pairs — two anchors half a second apart turn Whisper's ±50–100 ms
+  word-timing jitter into absurd local-rate "spreads" (a real run printed
+  1865‰), and its threshold had mismatched units, so any residual above the
+  linear gate triggered a strategy-2 recommendation. Non-linearity is now
+  detected by fitting a separate least-squares clock ratio to each half of
+  the clip (only when each half has enough anchors over enough time) and
+  comparing the halves — constant-rate-but-noisy recordings correctly fall
+  through to the Hybrid recommendation.
+
 - **The model no longer *appears* to re-download on every start.** The
   engine now checks the disk first: a model already present (a local
   CTranslate2 directory or a complete Hugging Face cache snapshot) is

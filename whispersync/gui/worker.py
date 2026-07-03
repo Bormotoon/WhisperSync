@@ -78,14 +78,20 @@ class SyncWorker(QObject):
         # pieces, not just between whole clips/stages. See
         # PROJECT_ANALYSIS.md §3.5.
         self._cancel_event = threading.Event()
+        self._last_log_message: str | None = None
 
     def _on_progress(self, p: PipelineProgress) -> None:
         if self._cancel_event.is_set():
             raise InterruptedError("Cancelled by user")
         self.stage.emit(p.stage)
         self.progress.emit(overall_progress(p.stage, p.progress))
-        if p.message:
+        # Progress callbacks fire on every tick (e.g. per transcription
+        # segment); a stage that reuses the same message across ticks would
+        # flood the log with identical lines. Log a message only when it
+        # CHANGES — progress itself still flows through the bar above.
+        if p.message and p.message != self._last_log_message:
             self.log.emit(p.message)
+            self._last_log_message = p.message
         if p.clips is not None:
             self.timeline.emit(p.clips)
 

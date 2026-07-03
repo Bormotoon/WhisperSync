@@ -897,10 +897,14 @@ def run_pipeline(
 
             # Per-clip progress, not just a stage message: without this the
             # progress bar sits frozen at the same percentage for the whole
-            # duration of a long camera clip's transcription. See
+            # duration of a long camera clip's transcription. Progress ticks
+            # carry NO message — the clip was already announced by the
+            # "Transcribing camera clip i/n: ..." line above, and a message
+            # here would be re-logged on every transcription segment,
+            # flooding the log with dozens of identical lines per clip. See
             # PROJECT_ANALYSIS.md §6.6.
-            def _clip_progress(p: float, idx: int = idx, name: str = clip.path.name) -> None:
-                _notify("transcribing_camera", (idx + p) / max(n, 1), name)
+            def _clip_progress(p: float, idx: int = idx) -> None:
+                _notify("transcribing_camera", (idx + p) / max(n, 1))
 
             clip_transcript = engine.transcribe(clip_audio, _clip_progress)
             clip_transcripts.append(clip_transcript)
