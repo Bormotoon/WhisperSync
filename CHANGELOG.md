@@ -4,6 +4,22 @@ All notable changes to WhisperSync will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — GitHub publication prep (2026-07-03)
+
+- **License changed from MIT to PolyForm Noncommercial 1.0.0**: WhisperSync
+  is now source-available and free for noncommercial use; commercial use
+  requires a separate license from the author. `pyproject.toml`, LICENSE,
+  CONTRIBUTING, and both READMEs updated accordingly.
+- **README overhaul**: English is now the default `README.md` (the Russian
+  version moved to `README.ru.md`, replacing the old `README.en.md`
+  arrangement). Both are full mirrors covering every feature, the complete
+  CLI/config reference, output files, verification tools, architecture, and
+  data flow.
+- **Fresh GUI screenshots** rendered from the current UI (multi-recorder
+  drop zone, recorder-mode picker, Re-run button, settings dialog, populated
+  multitrack timeline); the obsolete strategy-4 diagram was removed and the
+  strategy/simulator shots regenerated to match the merged 3-strategy model.
+
 ### Changed — final plan-completion audit (2026-07-03)
 
 A start-to-finish re-verification of the remediation plan against the code

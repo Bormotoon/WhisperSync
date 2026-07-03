@@ -72,5 +72,9 @@ ffmpeg version, the command you ran, and the full error/log output.
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the
-project's [MIT License](LICENSE).
+WhisperSync is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE) — free for noncommercial use;
+commercial use requires a separate license from the author. By contributing,
+you agree that your contributions are licensed under the same terms, and that
+the project author may also offer them as part of commercial licenses of
+WhisperSync.
