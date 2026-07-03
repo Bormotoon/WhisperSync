@@ -166,10 +166,14 @@ python -m whispersync.engine.system_check
 python main.py
 ```
 
-Drag-and-drop a video folder and a recorder file, pick a strategy and options
-(Boundary Flex, pause ducking, ambience track), press **SYNC**, then import the
-generated `.fcpxml` into Final Cut Pro or DaVinci Resolve. The timeline updates
-live as clips are processed.
+Drag-and-drop a video folder and one or more recorder files (2+ files unlocks
+a `best`/`all` recorder-mode picker), pick a strategy and options (Boundary
+Flex, pause ducking, ambience track), optionally open **Transcription
+Settings...** for model/language/device/compute-type/initial-prompt/mode,
+press **SYNC**, then import the generated `.fcpxml` into Final Cut Pro or
+DaVinci Resolve. The timeline updates live as clips are processed, and a
+**Re-run with Selected Strategy** button appears after a successful run —
+transcripts are cached, so switching strategies re-runs alignment/render only.
 
 ### CLI
 

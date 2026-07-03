@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.transcriber import WhisperEngine
@@ -41,3 +42,22 @@ def test_cache_key_changes_with_decoding_params(tmp_path: Path) -> None:
     key_a = WhisperEngine._cache_key(audio, cfg_a, "cpu", "float32")
     key_b = WhisperEngine._cache_key(audio, cfg_b, "cpu", "float32")
     assert key_a != key_b
+
+
+def test_on_model_loading_fires_once_before_first_load() -> None:
+    calls: list[str] = []
+    cfg = WhisperSyncConfig()
+    engine = WhisperEngine(cfg, on_model_loading=lambda: calls.append("loading"))
+
+    with patch.object(WhisperEngine, "_load", return_value=object()):
+        engine._ensure_model()
+        engine._ensure_model()  # already loaded -> must not fire again
+
+    assert calls == ["loading"]
+
+
+def test_on_model_loading_not_required() -> None:
+    cfg = WhisperSyncConfig()
+    engine = WhisperEngine(cfg)  # no callback passed
+    with patch.object(WhisperEngine, "_load", return_value=object()):
+        engine._ensure_model()  # must not raise

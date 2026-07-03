@@ -768,7 +768,15 @@ def run_pipeline(
         _notify("scanning", 1.0, "Preliminary layout", clips=_video_snapshot())
 
         # --- transcribe every recorder once ---
-        engine = WhisperEngine(config)
+        def _on_model_loading() -> None:
+            _notify(
+                "transcribing_recorder",
+                0.0,
+                f"Loading Whisper model '{config.model}' "
+                "(first run may download it from HuggingFace)...",
+            )
+
+        engine = WhisperEngine(config, on_model_loading=_on_model_loading)
         transcripts_dir = output_path.parent / "transcripts"
 
         def _save_tx(transcript: Transcript, stem: str, audio_path: Path) -> None:

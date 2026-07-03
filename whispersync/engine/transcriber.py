@@ -93,11 +93,20 @@ def _is_cuda_oom(exc: BaseException) -> bool:
 
 
 class WhisperEngine:
-    def __init__(self, config: WhisperSyncConfig) -> None:
+    def __init__(
+        self,
+        config: WhisperSyncConfig,
+        on_model_loading: Callable[[], None] | None = None,
+    ) -> None:
         self.config = config
         self._model: Any = None
         self._device: str = resolve_device(config.device)
         self._compute_type: str = select_compute_type(self._device, config.compute_type)
+        # Fired once, right before the (potentially slow, first-run-downloads-
+        # from-HuggingFace) model load actually happens — lets a caller show a
+        # "loading model..." status instead of the UI looking frozen. See
+        # PROJECT_ANALYSIS.md §Stage 7.5.
+        self._on_model_loading = on_model_loading
 
     @property
     def device(self) -> str:
@@ -127,6 +136,8 @@ class WhisperEngine:
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
+        if self._on_model_loading is not None:
+            self._on_model_loading()
         try:
             self._model = self._load(self._device, self._compute_type)
             return

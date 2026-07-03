@@ -45,6 +45,7 @@ from whispersync.config import WhisperSyncConfig
 from whispersync.gui.widgets.drop_zone import DropZone
 from whispersync.gui.widgets.help_page import HelpPage
 from whispersync.gui.widgets.log_view import LogView
+from whispersync.gui.widgets.settings_dialog import SettingsDialog
 from whispersync.gui.widgets.timeline_preview import TimelinePreview
 from whispersync.gui.worker import SyncWorker
 
@@ -104,15 +105,32 @@ class MainWindow(QMainWindow):
         audio_group = QGroupBox("Recorder Audio")
         audio_layout = QVBoxLayout(audio_group)
         self.audio_drop = DropZone(
-            placeholder="Drop audio file here",
+            placeholder="Drop audio file(s) here",
             accept_dirs=False,
+            accept_multiple=True,
             accepted_extensions=self.config.audio_exts,
         )
         self.audio_drop.path_dropped.connect(self._on_audio_dropped)
+        self.audio_drop.paths_dropped.connect(self._on_audio_paths_dropped)
         audio_layout.addWidget(self.audio_drop)
         self.btn_browse_audio = QPushButton("Browse...")
         self.btn_browse_audio.clicked.connect(self._browse_audio)
         audio_layout.addWidget(self.btn_browse_audio)
+        # Only meaningful with 2+ recorders: "best" keeps one audio lane per
+        # clip (the strongest-matching recorder); "all" puts every recorder on
+        # its own lane, for multi-mic/multi-speaker setups.
+        self.recorder_mode_combo = QComboBox()
+        self.recorder_mode_combo.addItems(["best", "all"])
+        self.recorder_mode_combo.setCurrentText(self.config.recorder_mode)
+        self.recorder_mode_combo.setEnabled(False)
+        self.recorder_mode_combo.setToolTip(
+            "best = one audio lane, strongest recorder per clip. "
+            "all = every recorder on its own lane (multi-mic/multi-speaker)."
+        )
+        recorder_mode_row = QHBoxLayout()
+        recorder_mode_row.addWidget(QLabel("Recorder mode:"))
+        recorder_mode_row.addWidget(self.recorder_mode_combo, stretch=1)
+        audio_layout.addLayout(recorder_mode_row)
         left_layout.addWidget(audio_group)
 
         output_group = QGroupBox("Output Folder")
@@ -219,6 +237,10 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(options_group)
 
+        self.btn_settings = QPushButton("Transcription Settings...")
+        self.btn_settings.clicked.connect(self._open_settings_dialog)
+        left_layout.addWidget(self.btn_settings)
+
         self.btn_sync = QPushButton("SYNC")
         self.btn_sync.setObjectName("primaryButton")
         self.btn_sync.setMinimumHeight(48)
@@ -288,6 +310,17 @@ class MainWindow(QMainWindow):
         self.btn_open_folder.setEnabled(False)
         self.btn_open_folder.clicked.connect(self._open_output_folder)
         result_layout.addWidget(self.btn_open_folder)
+        # Re-running only changes strategy_id; transcripts are cached
+        # (config.use_cache), so a re-run skips straight to alignment/render
+        # instead of re-transcribing every recorder/clip from scratch.
+        self.btn_rerun = QPushButton("Re-run with Selected Strategy")
+        self.btn_rerun.setEnabled(False)
+        self.btn_rerun.setToolTip(
+            "Re-run using the currently selected strategy above. Transcripts are "
+            "cached, so this skips straight to alignment/render."
+        )
+        self.btn_rerun.clicked.connect(self._start_sync)
+        result_layout.addWidget(self.btn_rerun)
         right_layout.addWidget(result_group)
 
         log_group = QGroupBox("Log")
@@ -347,6 +380,15 @@ class MainWindow(QMainWindow):
     def _on_strategy_changed(self) -> None:
         self.help_page.set_strategy(self._get_strategy_id())
 
+    def _open_settings_dialog(self) -> None:
+        dialog = SettingsDialog(self.config, self)
+        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+            self.config = dialog.apply_to(self.config)
+            self.log_view.append_log(
+                f"Transcription settings updated: model={self.config.model}, "
+                f"device={self.config.device}, mode={self.config.transcribe_mode}"
+            )
+
     @staticmethod
     def _duck_db_text(db: int) -> str:
         # The slider floor is treated as full silence.
@@ -369,6 +411,11 @@ class MainWindow(QMainWindow):
         self.settings.setValue("last_audio_file", path)
         self.log_view.append_log(f"Audio file: {path}")
 
+    def _on_audio_paths_dropped(self, paths: list) -> None:
+        self.recorder_mode_combo.setEnabled(len(paths) > 1)
+        if len(paths) > 1:
+            self.log_view.append_log(f"{len(paths)} recorder audio files selected")
+
     def _on_output_dropped(self, path: str) -> None:
         self._output_user_set = True
         self.log_view.append_log(f"Output folder: {path}")
@@ -387,11 +434,13 @@ class MainWindow(QMainWindow):
 
     def _browse_audio(self) -> None:
         exts = " ".join(f"*{e}" for e in self.config.audio_exts)
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Audio File", "", f"Audio Files ({exts})"
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Audio File(s)", "", f"Audio Files ({exts})"
         )
-        if path:
-            self.audio_drop.set_path(path)
+        if paths:
+            self.audio_drop.set_paths(paths)
+            self._on_audio_dropped(paths[0])
+            self._on_audio_paths_dropped(paths)
 
     def _browse_output(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Output Folder")
@@ -401,13 +450,13 @@ class MainWindow(QMainWindow):
 
     def _start_sync(self) -> None:
         video_path = self.video_drop.current_path
-        audio_path = self.audio_drop.current_path
+        audio_paths = self.audio_drop.current_paths
 
         if not video_path or not Path(video_path).is_dir():
             QMessageBox.warning(self, "Error", "Please select a video folder.")
             return
-        if not audio_path or not Path(audio_path).is_file():
-            QMessageBox.warning(self, "Error", "Please select an audio file.")
+        if not audio_paths or not all(Path(p).is_file() for p in audio_paths):
+            QMessageBox.warning(self, "Error", "Please select at least one audio file.")
             return
 
         # Output goes to the chosen folder, or next to the sources by default.
@@ -437,10 +486,12 @@ class MainWindow(QMainWindow):
             pause_duck_enabled=self.duck_check.isChecked(),
             pause_duck_db=-200.0 if db <= -60 else float(db),
             ambience_track=self.ambience_check.isChecked(),
+            recorder_mode=self.recorder_mode_combo.currentText(),
         )
 
         self.right_tabs.setCurrentIndex(0)  # show the Run tab during processing
         self.btn_sync.setEnabled(False)
+        self.btn_rerun.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.progress_bar.setValue(0)
         self.log_view.clear_log()
@@ -449,7 +500,7 @@ class MainWindow(QMainWindow):
         self._worker = SyncWorker(
             config=run_config,
             video_dir=Path(video_path),
-            audio_files=[Path(audio_path)],
+            audio_files=[Path(p) for p in audio_paths],
             strategy_id=strategy_id,
             output_path=output_path,
         )
@@ -505,6 +556,7 @@ class MainWindow(QMainWindow):
                 f"{'Output':<9}{result.fcpxml_path}"
             )
             self.btn_open_folder.setEnabled(True)
+            self.btn_rerun.setEnabled(True)
             self._output_path = result.fcpxml_path.parent
             # The timeline is kept live via the worker's `timeline` signal.
 
