@@ -254,7 +254,8 @@ python main.py --cli --video-dir ./videos --audio-file rec.wav \
 | `--boundary-flex` / `--no-boundary-flex` | flag | Акустическое покадровое доуточнение старта каждого куска (по умолчанию **вкл.**) |
 | `--pause-duck` / `--no-pause-duck` | flag | Приглушать паузы, где молчат обе дорожки (по умолчанию выкл.) |
 | `--pause-duck-db` | float | Глубина приглушения, дБ: `0` = выкл. … сильно отрицательное → тишина (по умолчанию `-18`) |
-| `--ambience-track` | flag | Дорожка эмбиента камеры без голоса (нужен `.sep-venv`, см. `setup_sep_venv.sh`; по умолчанию выкл.) |
+| `--ambience-track` | flag | Дорожка эмбиента камеры без голоса (нужен `.sep-venv`, см. `setup_sep_venv.sh`; по умолчанию **вкл.**, при отсутствии `.sep-venv` пропускается с предупреждением) |
+| `--voice-segment-minutes` | int | Разбить каждый voice-WAV на отрезки ~N минут с разрезом в ближайшей тишине (`0` = один непрерывный файл, по умолчанию). Позволяет синхронизатору NLE подравнивать каждые несколько минут. Типично: `1`/`2`/`3`/`5`/`10` |
 | `--render-master-wav` | flag | Дополнительно один WAV на весь таймлайн (voice + эмбиент по своим позициям поверх тишины) рядом с FCPXML (по умолчанию выкл.) |
 | `--save-transcripts` / `--no-save-transcripts` | flag | Сохранять транскрипты (JSON+SRT) в `output/transcripts/` (по умолчанию вкл.) |
 | `--config` | Path | JSON-конфиг (несуществующий путь — ошибка, а не тихий откат) |
@@ -355,7 +356,8 @@ WhisperSync читает JSON-конфиг через `--config config.json`. **
     "boundary_flex": true,
     "pause_duck_enabled": false,
     "pause_duck_db": -18.0,
-    "ambience_track": false,
+    "ambience_track": true,
+    "voice_segment_minutes": 0,
     "render_master_wav": false
 }
 ```
@@ -379,6 +381,7 @@ WhisperSync читает JSON-конфиг через `--config config.json`. **
 | `render_workers` | int | Параллельные ffmpeg-процессы рендера (`0` = авто) |
 | `render_master_wav` | bool | Дополнительно один WAV на весь таймлайн (выкл. по умолчанию) |
 | `cache_max_age_days` | float | Удалять кэш транскрипций старше N дней при старте; `0` (по умолчанию) — хранить вечно |
+| `voice_segment_minutes` | int | Разбивать каждый voice-WAV на отрезки ~N минут с разрезом в тишине (`0` = монолит, по умолчанию) |
 
 ## Выходные файлы
 

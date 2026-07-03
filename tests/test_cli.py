@@ -100,3 +100,12 @@ def test_render_master_wav_flag_defaults_off() -> None:
         ["--video-dir", "v", "--audio-file", "r.wav", "--render-master-wav"]
     )
     assert args.render_master_wav is True
+
+
+def test_voice_segment_minutes_flag() -> None:
+    args = _build_parser().parse_args(["--video-dir", "v", "--audio-file", "r.wav"])
+    assert args.voice_segment_minutes is None
+    args = _build_parser().parse_args(
+        ["--video-dir", "v", "--audio-file", "r.wav", "--voice-segment-minutes", "3"]
+    )
+    assert args.voice_segment_minutes == 3

@@ -254,7 +254,8 @@ python main.py --cli --video-dir ./videos --audio-file rec.wav \
 | `--boundary-flex` / `--no-boundary-flex` | flag | Acoustic sub-frame refinement of each piece's start (default **on**) |
 | `--pause-duck` / `--no-pause-duck` | flag | Attenuate pauses where both tracks are silent (default off) |
 | `--pause-duck-db` | float | Duck depth in dB: `0` = off … very negative → silence (default `-18`) |
-| `--ambience-track` | flag | Voice-free camera-ambience lane (needs `.sep-venv`, see `setup_sep_venv.sh`; default off) |
+| `--ambience-track` | flag | Voice-free camera-ambience lane (needs `.sep-venv`, see `setup_sep_venv.sh`; default **on**, skipped with a warning when `.sep-venv` is missing) |
+| `--voice-segment-minutes` | int | Split each rendered voice WAV into ~N-minute segments, cut at the quietest point near each boundary (`0` = one continuous file per clip, default). Lets the NLE's own audio sync re-align every few minutes. Typical: `1`/`2`/`3`/`5`/`10` |
 | `--render-master-wav` | flag | Also render one WAV spanning the whole timeline (voice + ambience mixed at their offsets over silence) next to the FCPXML (default off) |
 | `--save-transcripts` / `--no-save-transcripts` | flag | Save full transcripts (JSON+SRT) to `output/transcripts/` (default on) |
 | `--config` | Path | JSON config file (a missing path is an error, not a silent fallback) |
@@ -355,7 +356,8 @@ WhisperSync reads a JSON config via `--config config.json`. **Priority: CLI flag
     "boundary_flex": true,
     "pause_duck_enabled": false,
     "pause_duck_db": -18.0,
-    "ambience_track": false,
+    "ambience_track": true,
+    "voice_segment_minutes": 0,
     "render_master_wav": false
 }
 ```
@@ -379,6 +381,7 @@ WhisperSync reads a JSON config via `--config config.json`. **Priority: CLI flag
 | `render_workers` | int | Parallel ffmpeg render processes (`0` = auto) |
 | `render_master_wav` | bool | Also render one WAV spanning the whole timeline (default off) |
 | `cache_max_age_days` | float | Delete cached transcripts older than N days at engine start; `0` (default) keeps them forever |
+| `voice_segment_minutes` | int | Split each voice WAV into ~N-minute segments cut in silence (`0` = monolith, default) |
 
 ## Output Files
 

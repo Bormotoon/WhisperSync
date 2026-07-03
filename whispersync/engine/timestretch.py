@@ -479,6 +479,38 @@ def assemble_continuous(
     return output_path
 
 
+def cut_wav_segment(
+    src: Path,
+    dst: Path,
+    start_s: float,
+    end_s: float,
+    codec: str = _DEFAULT_CODEC,
+) -> Path:
+    """Cut ``[start_s, end_s)`` out of a PCM WAV into ``dst``, bit-identically.
+
+    Re-encoding PCM to the same PCM codec is a lossless byte-for-byte copy of
+    the samples (unlike ``-c copy``, which cuts on packet boundaries), so the
+    concatenation of all segments reproduces the source exactly.
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(src),
+        "-ss",
+        f"{start_s:.6f}",
+        "-to",
+        f"{end_s:.6f}",
+        "-acodec",
+        codec,
+        str(dst),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg segment cut failed: {result.stderr[-500:]}")
+    return dst
+
+
 def mix_clips_on_timeline(
     clips: list[tuple[Path, float]],
     total_duration: float,

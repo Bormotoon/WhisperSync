@@ -43,6 +43,7 @@ from whispersync.engine.naming import natural_key
 from whispersync.engine.strategies import strategy_name
 from whispersync.engine.timestretch import (
     assemble_continuous,
+    cut_wav_segment,
     mix_clips_on_timeline,
     render_piece,
 )
@@ -862,6 +863,61 @@ def _timeline_end(clips: list[MediaClip]) -> float:
     return max((c.offset + c.duration for c in clips), default=0.0)
 
 
+# Voice segmentation: how far a cut may wander from its nominal N-minute mark
+# to find silence, and how short a final tail is allowed to be before it is
+# merged into the previous segment instead of becoming its own tiny file.
+_SEGMENT_SEARCH_S = 15.0
+_SEGMENT_MIN_TAIL_S = 10.0
+
+
+def _quiet_cut_points(voice_wav: Path, duration_s: float, segment_s: float) -> list[float]:
+    """Cut points for splitting a rendered voice WAV into ~``segment_s`` pieces,
+    each snapped to the quietest moment within ``±_SEGMENT_SEARCH_S`` of its
+    nominal mark — a segment boundary must never land inside speech, because
+    an NLE re-aligning each segment independently (the whole point of the
+    feature) would turn a mid-word cut into an audible glitch.
+
+    Energy is measured on a 16 kHz mono decode in 50 ms hops; every hop within
+    10% of the window's noise floor counts as "silent enough", and among those
+    the one closest to the nominal mark wins.
+    """
+    if segment_s <= 0 or duration_s <= segment_s + _SEGMENT_MIN_TAIL_S:
+        return []
+    from whispersync.engine.acoustic import load_mono16k_track
+
+    track = load_mono16k_track(voice_wav)
+    sr = 16000
+    hop = int(0.05 * sr)
+    n_hops = max(1, len(track) // hop)
+    rms = np.array(
+        [float(np.sqrt(np.mean(track[i * hop : (i + 1) * hop] ** 2))) for i in range(n_hops)]
+    )
+    # A cut must sit in a NEIGHBOURHOOD of silence, not in one quiet 50 ms hop
+    # between two syllables: smooth the energy over ~250 ms before judging.
+    if len(rms) >= 5:
+        rms = np.convolve(rms, np.ones(5) / 5.0, mode="same")
+    cuts: list[float] = []
+    t = segment_s
+    while t < duration_s - _SEGMENT_MIN_TAIL_S:
+        lo = max(0, int((t - _SEGMENT_SEARCH_S) * sr / hop))
+        hi = min(len(rms), int((t + _SEGMENT_SEARCH_S) * sr / hop))
+        if hi <= lo:
+            cuts.append(t)
+        else:
+            window = rms[lo:hi]
+            floor = float(window.min())
+            # "Silent enough" = within 15% of the way from the window's noise
+            # floor to its MEDIAN (speech level) — strict enough to reject
+            # decaying word tails, which a max-based threshold let through.
+            thr = floor + 0.15 * (float(np.median(window)) - floor) + 1e-9
+            good = np.flatnonzero(window <= thr)
+            nominal_idx = int(t * sr / hop) - lo
+            best = int(good[np.argmin(np.abs(good - nominal_idx))])
+            cuts.append((lo + best) * hop / sr)
+        t = cuts[-1] + segment_s
+    return cuts
+
+
 def _anchor_count(am: AlignmentMap | None) -> int:
     return len(am.anchors) if am is not None else 0
 
@@ -1502,6 +1558,70 @@ def run_pipeline(
         else:
             if pool is not None:
                 pool.shutdown(wait=True)
+
+        # --- optionally split each rendered voice monolith into N-minute
+        # segments (cut in silence), so an NLE's own audio sync (e.g. FCPX
+        # "Synchronize Clips") can re-align every few minutes instead of once
+        # per clip — residual intra-clip drift then resets at each boundary. ---
+        if config.voice_segment_minutes > 0 and audio_clips:
+            _notify("processing", 1.0, "Splitting voice into segments...")
+            seg_s = config.voice_segment_minutes * 60.0
+            new_clips: list[MediaClip] = []
+            new_speed: list[float] = []
+            new_track: list[str] = []
+            new_status: list[str] = []
+            for ci_a, aclip in enumerate(audio_clips):
+                cuts = (
+                    _quiet_cut_points(aclip.path, aclip.duration, seg_s)
+                    if aclip.path.suffix.lower() == ".wav"
+                    else []
+                )
+                if not cuts:
+                    new_clips.append(aclip)
+                    new_speed.append(audio_speed[ci_a])
+                    new_track.append(audio_track[ci_a])
+                    new_status.append(audio_status[ci_a])
+                    continue
+                bounds = [0.0, *cuts, aclip.duration]
+                base = aclip.path.with_suffix("")
+                # Same PCM codec as the rendered voice itself — a PCM->same-PCM
+                # cut is byte-identical, so the segments concatenate back into
+                # the monolith exactly.
+                voice_codec = pcm_codec_for_bit_depth(
+                    probe(aclip.path, timeout=config.probe_timeout_s).audio_bits_per_sample
+                )
+                for si in range(len(bounds) - 1):
+                    a, b = bounds[si], bounds[si + 1]
+                    part = Path(f"{base}_p{si + 1:02d}.wav")
+                    cut_wav_segment(aclip.path, part, a, b, codec=voice_codec)
+                    new_clips.append(
+                        MediaClip(
+                            path=part,
+                            kind="audio",
+                            offset=aclip.offset + a,
+                            in_point=0.0,
+                            duration=b - a,
+                            lane=aclip.lane,
+                            display_name=f"{aclip.display_name or aclip.path.stem}_p{si + 1:02d}",
+                            role=aclip.role,
+                        )
+                    )
+                    new_speed.append(audio_speed[ci_a])
+                    new_track.append(audio_track[ci_a])
+                    new_status.append(audio_status[ci_a])
+                with contextlib.suppress(OSError):
+                    os.unlink(aclip.path)
+                logger.info(
+                    "Split %s into %d segment(s) of ~%d min",
+                    aclip.path.name,
+                    len(bounds) - 1,
+                    config.voice_segment_minutes,
+                )
+            audio_clips = new_clips
+            audio_speed, audio_track, audio_status = new_speed, new_track, new_status
+            plan.clips = video_clips + audio_clips
+            plan.total_duration = _timeline_end(plan.clips)
+            _notify("processing", 1.0, "Voice segments ready", clips=_timeline_snapshot())
 
         # --- extract voice-free camera ambience onto its own lane (optional) ---
         # Strip the camera's own voice (which would double/echo the clean synced

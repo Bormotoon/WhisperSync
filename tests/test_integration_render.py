@@ -305,3 +305,49 @@ def test_mix_clips_on_timeline_empty_clip_list_is_silence(tmp_path: Path) -> Non
     mix_clips_on_timeline([], total_duration=2.0, sample_rate=48000, output_path=out)
     info = probe(out)
     assert abs(info.duration - 2.0) < 0.01
+
+
+def test_cut_wav_segment_is_bit_exact(stereo24_source: Path, tmp_path: Path) -> None:
+    # Cutting [2..5)s + [5..8)s out of a PCM WAV and concatenating the raw
+    # samples must reproduce the source span exactly (PCM->same-PCM re-encode
+    # is lossless), and each part must keep channels/bit depth.
+    from whispersync.engine.timestretch import cut_wav_segment
+
+    p1 = cut_wav_segment(stereo24_source, tmp_path / "p1.wav", 2.0, 5.0, codec="pcm_s24le")
+    p2 = cut_wav_segment(stereo24_source, tmp_path / "p2.wav", 5.0, 8.0, codec="pcm_s24le")
+    for p in (p1, p2):
+        info = probe(p)
+        assert info.audio_channels == 2
+        assert info.audio_bits_per_sample == 24
+        assert abs(info.duration - 3.0) < 0.01
+
+    def raw(path: Path, ss: str | None = None, to: str | None = None) -> bytes:
+        cmd = ["ffmpeg", "-v", "error", "-i", str(path)]
+        if ss:
+            cmd += ["-ss", ss]
+        if to:
+            cmd += ["-to", to]
+        cmd += ["-f", "s24le", "-"]
+        return subprocess.run(cmd, check=True, capture_output=True).stdout
+
+    joined = raw(p1) + raw(p2)
+    original = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-ss",
+            "2.0",
+            "-to",
+            "8.0",
+            "-i",
+            str(stereo24_source),
+            "-f",
+            "s24le",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert len(joined) == len(original)
+    assert joined == original

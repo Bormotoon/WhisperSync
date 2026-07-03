@@ -4,6 +4,28 @@ All notable changes to WhisperSync will be documented in this file.
 
 ## [Unreleased]
 
+### Added — voice segmentation for NLE-side re-sync
+
+- **`voice_segment_minutes` / `--voice-segment-minutes` / GUI "Voice file
+  split" combo (Monolith · 1 · 2 · 3 · 5 · 10 min)**: optionally split each
+  rendered voice WAV into ~N-minute segments, with every cut snapped to the
+  quietest moment within ±15 s of its nominal mark so a boundary never lands
+  inside speech. Segments are cut PCM→same-PCM (bit-identical; they
+  concatenate back into the monolith exactly) and each is placed at its own
+  timeline offset in the FCPXML. Rationale: FCPX/Resolve's own audio
+  synchronization aligns each audio item once as a whole — with one monolith
+  per clip, residual intra-clip drift becomes audible doubling a minute in;
+  with segments the NLE re-aligns every few minutes and the drift resets at
+  each boundary. Default remains one continuous file per clip.
+
+### Changed — field-validated defaults
+
+- **`ambience_track` now defaults to ON** (validated on real shoots; skipped
+  with a warning when `.sep-venv` isn't set up — and the GUI checkbox now
+  unchecks itself in that case instead of silently requesting the
+  impossible). `boundary_flex=true` and `timebase_source="camera"` remain
+  the defaults, now confirmed as the recommended production configuration.
+
 ### Changed — sentence-wise Hybrid rendering (stutter/micro-repeat elimination)
 
 A real 8-clip run on strategy 3 still produced stutters and micro-repeats.

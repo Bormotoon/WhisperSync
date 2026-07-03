@@ -461,3 +461,52 @@ def test_strategy2_snap_moves_both_sides_keeping_factors_stable() -> None:
     assert any(abs(s - 5.3) < 1e-9 for s, _d, _f in pieces)  # snap happened
     for _s, _d, f in pieces:
         assert abs(f - 1.0) < 0.01, f"factor {f} destabilized by one-sided snap"
+
+
+# --- voice segmentation (quiet cut points) -------------------------------------
+
+
+def test_quiet_cut_points_snap_to_silence(monkeypatch, tmp_path: Path) -> None:
+    # 190s "voice": loud everywhere except a 2s silent gap at 65..67s. With
+    # 60s segments the first cut must land in the gap (not at the nominal 60).
+    import numpy as np
+
+    sr = 16000
+    track = np.ones(190 * sr, dtype=np.float32) * 0.5
+    track[65 * sr : 67 * sr] = 0.0
+    monkeypatch.setattr("whispersync.engine.acoustic.load_mono16k_track", lambda p: track)
+
+    from whispersync.engine.pipeline import _quiet_cut_points
+
+    cuts = _quiet_cut_points(tmp_path / "voice.wav", duration_s=190.0, segment_s=60.0)
+    assert cuts, "expected at least one cut"
+    assert 65.0 <= cuts[0] <= 67.0, f"first cut {cuts[0]} not in the silent gap"
+    # second cut ~cuts[0]+60 (uniform loudness there -> closest-to-nominal wins)
+    assert abs(cuts[1] - (cuts[0] + 60.0)) <= 15.0 + 1e-6
+
+
+def test_quiet_cut_points_short_file_returns_none(monkeypatch, tmp_path: Path) -> None:
+    import numpy as np
+
+    monkeypatch.setattr(
+        "whispersync.engine.acoustic.load_mono16k_track",
+        lambda p: np.ones(50 * 16000, dtype=np.float32),
+    )
+    from whispersync.engine.pipeline import _quiet_cut_points
+
+    assert _quiet_cut_points(tmp_path / "v.wav", duration_s=50.0, segment_s=60.0) == []
+    assert _quiet_cut_points(tmp_path / "v.wav", duration_s=65.0, segment_s=60.0) == []
+
+
+def test_quiet_cut_points_no_tiny_tail(monkeypatch, tmp_path: Path) -> None:
+    # 125s at 60s segments: a cut at ~120 would leave a 5s tail -> merged.
+    import numpy as np
+
+    monkeypatch.setattr(
+        "whispersync.engine.acoustic.load_mono16k_track",
+        lambda p: np.ones(125 * 16000, dtype=np.float32),
+    )
+    from whispersync.engine.pipeline import _quiet_cut_points
+
+    cuts = _quiet_cut_points(tmp_path / "v.wav", duration_s=125.0, segment_s=60.0)
+    assert len(cuts) == 1  # only the ~60s cut; no second cut near 120

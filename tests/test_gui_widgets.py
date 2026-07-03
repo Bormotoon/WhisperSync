@@ -84,3 +84,13 @@ def test_settings_dialog_prefills_from_config(qapp: QApplication) -> None:
     assert dialog.model_combo.currentText() == "medium"
     assert dialog.language_edit.text() == "en"
     assert dialog.device_combo.currentText() == "cpu"
+
+
+def test_main_window_segment_combo_defaults_to_monolith(qapp: QApplication) -> None:
+    from whispersync.gui.main_window import MainWindow
+
+    w = MainWindow()
+    assert w.segment_combo.currentData() == 0  # Monolith
+    values = [w.segment_combo.itemData(i) for i in range(w.segment_combo.count())]
+    assert values == [0, 1, 2, 3, 5, 10]
+    w.close()

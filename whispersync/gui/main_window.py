@@ -228,12 +228,32 @@ class MainWindow(QMainWindow):
                 "voice while keeping the ambience, on a separate lane."
             )
         else:
+            # Uncheck as well as disable: with ambience now ON by default in
+            # the config, a checked-but-disabled box would silently request a
+            # feature that can't run (a warning every single run).
+            self.ambience_check.setChecked(False)
             self.ambience_check.setEnabled(False)
             self.ambience_check.setToolTip(
                 "Requires the '.sep-venv' environment, which is not set up. "
                 "Run setup_sep_venv.sh to enable this feature."
             )
         options_layout.addRow(self.ambience_check)
+
+        # Voice segmentation: split each rendered voice WAV into N-minute
+        # pieces (cut in silence) so the NLE's own audio sync can re-align
+        # every few minutes. 0 = one continuous file per clip (default).
+        self.segment_combo = QComboBox()
+        self.segment_combo.addItem("Monolith (one file)", 0)
+        for minutes in (1, 2, 3, 5, 10):
+            self.segment_combo.addItem(f"{minutes} min segments", minutes)
+        idx = self.segment_combo.findData(self.config.voice_segment_minutes)
+        self.segment_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.segment_combo.setToolTip(
+            "Split the synced voice into segments of this length, cut at the "
+            "quietest point near each boundary — useful when FCPX/Resolve "
+            "re-synchronizes each audio item on import."
+        )
+        options_layout.addRow("Voice file split:", self.segment_combo)
 
         left_layout.addWidget(options_group)
 
@@ -487,6 +507,7 @@ class MainWindow(QMainWindow):
             pause_duck_db=-200.0 if db <= -60 else float(db),
             ambience_track=self.ambience_check.isChecked(),
             recorder_mode=self.recorder_mode_combo.currentText(),
+            voice_segment_minutes=int(self.segment_combo.currentData() or 0),
         )
 
         self.right_tabs.setCurrentIndex(0)  # show the Run tab during processing

@@ -218,10 +218,20 @@ class WhisperSyncConfig:
     pause_duck_db: float = PAUSE_DUCK_DB
     pause_duck_fade_ms: int = PAUSE_DUCK_FADE_MS
     pause_duck_min_pause_s: float = PAUSE_DUCK_MIN_PAUSE_S
-    # Ambience track (off by default): extract voice-free camera ambience onto its own
-    # lane so the only voice is the clean synced one (no doubled/echoed voice).
-    ambience_track: bool = False
+    # Ambience track (ON by default — validated on real shoots): extract
+    # voice-free camera ambience onto its own lane so the only voice is the
+    # clean synced one (no doubled/echoed voice). Requires the .sep-venv
+    # environment; silently skipped (with a warning) when it isn't set up.
+    ambience_track: bool = True
     ambience_model: str = AMBIENCE_MODEL
+    # Split each rendered voice WAV into segments of this many minutes
+    # (0 = keep one continuous file per clip, the default). Cut points snap
+    # to the quietest moment near each nominal boundary, so a cut never lands
+    # inside speech. Useful when the NLE's own audio sync (e.g. FCPX
+    # "Synchronize Clips") re-aligns each audio item independently: shorter
+    # items let it correct residual drift every N minutes instead of once
+    # per clip. Typical choices: 1, 2, 3, 5 or 10.
+    voice_segment_minutes: int = 0
     # Render a single WAV spanning the whole timeline (every synced voice clip,
     # and the ambience track if enabled, mixed at their timeline offsets over a
     # silent bed) next to the FCPXML, for users without an NLE to drop the

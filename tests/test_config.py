@@ -56,3 +56,11 @@ def test_load_config_cli_overrides_win(tmp_path: Path) -> None:
     path.write_text(json.dumps({"model": "medium"}))
     cfg = load_config(path, model="large-v3")
     assert cfg.model == "large-v3"
+
+
+def test_voice_segment_and_ambience_defaults() -> None:
+    cfg = WhisperSyncConfig()
+    assert cfg.voice_segment_minutes == 0  # monolith by default
+    assert cfg.ambience_track is True  # ambience extraction on by default
+    assert cfg.boundary_flex is True
+    assert cfg.timebase_source == "camera"

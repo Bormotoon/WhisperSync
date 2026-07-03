@@ -224,6 +224,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "GCC-PHAT cross-correlation (see tools/verify_sync.py) and print a summary",
     )
     parser.add_argument(
+        "--voice-segment-minutes",
+        type=int,
+        default=None,
+        help="Split each rendered voice WAV into ~N-minute segments, cut at the "
+        "quietest moment near each boundary (0 = one continuous file per clip, "
+        "the default). Lets an NLE's own audio sync re-align every few minutes. "
+        "Typical: 1, 2, 3, 5 or 10.",
+    )
+    parser.add_argument(
         "--render-master-wav",
         dest="render_master_wav",
         action="store_true",
@@ -449,6 +458,8 @@ def main() -> None:
         overrides["ambience_track"] = args.ambience_track
     if args.render_master_wav is not None:
         overrides["render_master_wav"] = args.render_master_wav
+    if args.voice_segment_minutes is not None:
+        overrides["voice_segment_minutes"] = args.voice_segment_minutes
 
     if args.no_cache:
         overrides["use_cache"] = False
