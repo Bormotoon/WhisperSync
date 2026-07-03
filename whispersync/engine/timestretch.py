@@ -108,8 +108,8 @@ def duck_filter_chain(
     """Build the ``volume=...`` filter chain that ducks ``pauses``, or ``None`` if
     there is nothing to duck (no spans, or ``duck_db`` disables ducking).
 
-    Split out from ``apply_pause_ducking`` so ``assemble_continuous`` can fold
-    ducking into its own filter graph in a single ffmpeg pass instead of a
+    ``assemble_continuous`` folds this chain into its own filter graph so
+    ducking happens in the same single ffmpeg pass as assembly, instead of a
     second full decode/encode over an intermediate file.
     """
     fade = max(fade_ms, 1) / 1000.0
@@ -122,56 +122,6 @@ def duck_filter_chain(
     return ",".join(
         f"volume=volume='{_duck_pause_expr(a, b, duck_lin, fade)}':eval=frame" for a, b in spans
     )
-
-
-def apply_pause_ducking(
-    input_path: Path,
-    output_path: Path,
-    pauses: list[tuple[float, float]],
-    duck_db: float,
-    fade_ms: int,
-    sample_rate: int,
-    channels: int = _DEFAULT_CHANNELS,
-    codec: str = _DEFAULT_CODEC,
-) -> Path:
-    """Attenuate the given ``pauses`` (local-time [start, end] spans, seconds) by
-    ``duck_db`` decibels with an equal-time linear fade at each edge.
-
-    ``duck_db`` 0 = no change; -inf (or very negative) = full silence. Speech regions
-    are left at unity gain. A no-op copy is returned when there is nothing to duck.
-    Kept as a standalone step for callers that don't go through
-    ``assemble_continuous`` (e.g. re-ducking an already-assembled file); the
-    pipeline itself asks ``assemble_continuous`` to duck inline (one pass).
-    """
-    chain = duck_filter_chain(pauses, duck_db, fade_ms)
-    if chain is None:
-        # Nothing to do — straight copy so callers always get an output file.
-        cmd = ["ffmpeg", "-y", "-i", str(input_path), "-c", "copy", str(output_path)]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg pause-duck copy failed: {result.stderr}")
-        return output_path
-
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(input_path),
-        "-af",
-        chain,
-        "-ar",
-        str(sample_rate),
-        "-ac",
-        str(channels),
-        "-acodec",
-        codec,
-        str(output_path),
-    ]
-    logger.info("Pause-ducking %d pause(s) by %.1f dB", len(pauses), duck_db)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg pause-duck failed: {result.stderr[-800:]}")
-    return output_path
 
 
 def apply_atempo_segment(
@@ -451,8 +401,8 @@ def assemble_continuous(
     concatenation and this final encode never touch the audio's resolution.
 
     Pass ``duck_pauses`` (with ``duck_db`` < 0) to fold pause-ducking into this
-    same ffmpeg invocation instead of a separate ``apply_pause_ducking`` pass
-    over an intermediate file — one encode instead of two.
+    same ffmpeg invocation (see ``duck_filter_chain``) instead of a separate
+    decode/encode pass over an intermediate file — one encode instead of two.
     """
     if not segment_paths:
         return generate_silence(output_path, total_duration, sample_rate, channels, codec)

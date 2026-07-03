@@ -113,6 +113,11 @@ class WhisperSyncConfig:
     cache_dir: str | None = None
     output_dir: str | None = None
     use_cache: bool = True
+    # Transcript-cache retention: cache entries older than this many days are
+    # deleted on engine startup. 0 (default) keeps them forever — transcripts
+    # are expensive to recompute and cheap to store, but a busy machine
+    # churning through many one-off projects can cap growth here.
+    cache_max_age_days: float = 0.0
     # Save full transcripts (JSON + SRT) of every recorder and camera clip next
     # to the output, under output/transcripts/.
     save_transcripts: bool = True

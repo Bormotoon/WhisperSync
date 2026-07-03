@@ -4,6 +4,36 @@ All notable changes to WhisperSync will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — final plan-completion audit (2026-07-03)
+
+A start-to-finish re-verification of the remediation plan against the code
+found and closed the last few gaps:
+
+- **One shared render pool for the whole run** (PROJECT_ANALYSIS.md §6.4):
+  pieces of every clip now render through a single process pool, and each
+  clip's final assembly overlaps the rendering of the next clips' pieces —
+  previously a new pool was created per clip and its single-threaded
+  assembly idled every core at each clip boundary.
+- **Mid-job cancellation actually works on multi-core renders**: the pooled
+  path now polls the cancel event while waiting for each piece (the old
+  per-job pool only honoured cancellation on the sequential
+  `render_workers=1` path, so cancelling during a large clip silently
+  waited for the whole clip to finish). Queued pieces are dropped
+  immediately on cancel.
+- **Fork safety** (PROJECT_ANALYSIS.md §3.3): the render pool forks only
+  when the process is single-threaded (the CLI path); a multi-threaded
+  process — the GUI always renders from a Qt worker thread — gets
+  forkserver/spawn instead, eliminating the classic
+  fork-a-multithreaded-process deadlock risk that Python 3.12+ warns about.
+  `main.py` calls `multiprocessing.freeze_support()` for frozen builds.
+- **Transcript-cache retention**: new `cache_max_age_days` config field
+  (default `0` = keep forever) prunes cache entries older than N days at
+  engine startup, capping the previously unbounded growth of
+  `~/.cache/whispersync/`.
+- Removed the now-dead `apply_pause_ducking` (ducking has been folded into
+  the single-pass assembly since the Stage 1 render overhaul; nothing
+  called it anymore).
+
 ### Added — new features (Stage 7, 2026-07-03)
 
 - **Auto-strategy recommendation**: after a run, the residual/local-drift

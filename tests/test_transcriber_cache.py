@@ -61,3 +61,59 @@ def test_on_model_loading_not_required() -> None:
     engine = WhisperEngine(cfg)  # no callback passed
     with patch.object(WhisperEngine, "_load", return_value=object()):
         engine._ensure_model()  # must not raise
+
+
+def test_prune_cache_removes_only_stale_entries(tmp_path: Path) -> None:
+    import os
+    import time
+
+    from whispersync.engine.transcriber import _prune_cache
+
+    old = tmp_path / "old.json"
+    fresh = tmp_path / "fresh.json"
+    other = tmp_path / "not_cache.txt"  # non-.json files are never touched
+    for f in (old, fresh, other):
+        f.write_text("{}")
+    stale_mtime = time.time() - 10 * 86400
+    os.utime(old, (stale_mtime, stale_mtime))
+    os.utime(other, (stale_mtime, stale_mtime))
+
+    removed = _prune_cache(tmp_path, max_age_days=7)
+    assert removed == 1
+    assert not old.exists()
+    assert fresh.exists()
+    assert other.exists()
+
+
+def test_prune_cache_missing_dir_is_noop(tmp_path: Path) -> None:
+    from whispersync.engine.transcriber import _prune_cache
+
+    assert _prune_cache(tmp_path / "does_not_exist", max_age_days=7) == 0
+
+
+def test_engine_init_prunes_when_configured(tmp_path: Path) -> None:
+    import os
+    import time
+
+    old = tmp_path / "stale.json"
+    old.write_text("{}")
+    stale_mtime = time.time() - 30 * 86400
+    os.utime(old, (stale_mtime, stale_mtime))
+
+    cfg = WhisperSyncConfig(cache_dir=str(tmp_path), cache_max_age_days=7)
+    WhisperEngine(cfg)
+    assert not old.exists()
+
+
+def test_engine_init_keeps_cache_forever_by_default(tmp_path: Path) -> None:
+    import os
+    import time
+
+    old = tmp_path / "ancient.json"
+    old.write_text("{}")
+    ancient = time.time() - 365 * 86400
+    os.utime(old, (ancient, ancient))
+
+    cfg = WhisperSyncConfig(cache_dir=str(tmp_path))  # cache_max_age_days=0
+    WhisperEngine(cfg)
+    assert old.exists()

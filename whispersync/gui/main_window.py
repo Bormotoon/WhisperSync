@@ -476,7 +476,7 @@ class MainWindow(QMainWindow):
         # under the running pipeline mid-run. See PROJECT_ANALYSIS.md §4.5.
         db = self.duck_slider.value()
         # Slider floor (-60) means full silence; map it to a very negative dB so
-        # the ducking filter zeroes the gain (apply_pause_ducking treats <= -120
+        # the ducking filter zeroes the gain (duck_filter_chain treats <= -120
         # as 0).
         run_config = dataclasses.replace(
             self.config,

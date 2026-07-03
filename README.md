@@ -344,6 +344,7 @@ WhisperSync поддерживает JSON-конфигурацию через `-
     "cache_dir": null,
     "output_dir": null,
     "use_cache": true,
+    "cache_max_age_days": 0,
     "save_transcripts": true,
     "timebase_source": "camera",
     "recorder_mode": "best",
@@ -383,6 +384,7 @@ WhisperSync поддерживает JSON-конфигурацию через `-
 | `anchor_min_confidence` | float | Минимальная уверенность слова, чтобы участвовать в поиске якорей (0.0–1.0) |
 | `render_workers` | int | Параллельные ffmpeg-процессы рендера (`0`=авто) |
 | `render_master_wav` | bool | Дополнительно отрендерить один WAV на весь таймлайн (voice + эмбиент на своих позициях поверх тишины) для пользователей без NLE (выкл. по умолчанию) |
+| `cache_max_age_days` | float | Удалять кэшированные транскрипции старше N дней при старте движка; `0` (по умолчанию) — хранить вечно |
 
 ## Troubleshooting
 

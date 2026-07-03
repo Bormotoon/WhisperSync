@@ -11,9 +11,12 @@ import contextlib
 import logging
 import multiprocessing as mp
 import os
+import shutil
 import tempfile
+import threading
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -525,18 +528,30 @@ def resolve_workers(requested: int) -> int:
 
 
 def _pool_context() -> Any:
-    """A 'fork' multiprocessing context for the render pools, with a safe fallback.
+    """Multiprocessing context for the render pool: fork only when it's safe.
 
-    fork is ideal here: children inherit the already-imported modules (no costly
-    re-import per task, which matters for many short ffmpeg calls) and it avoids the
-    spawn/forkserver re-execution of __main__. On platforms without fork (Windows /
-    macOS-spawn-only) we fall back to the default context, which still works because
-    the worker functions are module-level and picklable.
+    fork is the fastest start method (children inherit the already-imported
+    modules), but forking a MULTI-threaded process is a classic deadlock
+    source — the child inherits a snapshot of other threads' malloc/logging/
+    CUDA lock state (see PROJECT_ANALYSIS.md §3.3; Python 3.12+ warns about
+    exactly this, and 3.14 changed the Linux default away from fork). The GUI
+    always renders from a Qt worker thread, so it must never fork. fork is
+    used only when this process is single-threaded (the CLI path); otherwise
+    prefer forkserver (fresh single-threaded template process, cheap-ish
+    per-worker) and fall back to spawn/default where unavailable. The one
+    shared pool per run amortizes the slower non-fork startup.
     """
-    try:
-        return mp.get_context("fork")
-    except (ValueError, RuntimeError):  # pragma: no cover - platform dependent
-        return mp.get_context()
+    if threading.active_count() == 1:
+        try:
+            return mp.get_context("fork")
+        except ValueError:  # pragma: no cover - platform dependent
+            pass
+    for method in ("forkserver", "spawn"):
+        try:
+            return mp.get_context(method)
+        except ValueError:  # pragma: no cover - platform dependent
+            continue
+    return mp.get_context()  # pragma: no cover - platform dependent
 
 
 _SEAM_CONTIGUITY_TOL_S = 1e-3
@@ -564,70 +579,35 @@ def _piece_seam_fades(pieces: list[tuple[float, float, float]]) -> list[tuple[bo
     return flags
 
 
-def render_pieces(
+def _render_pieces_sequential(
     pieces: list[tuple[float, float, float]],
     rec_path: Path,
     tmp_dir: Path,
     fade_ms: int,
-    workers: int,
     sample_rate: int = 48000,
     channels: int = 1,
     codec: str = "pcm_s24le",
     stretch_method: str = "auto",
     cancel_event: Any = None,
 ) -> list[Path]:
-    """Render every piece to its own indexed WAV, in parallel across ``workers``
-    processes, and return the paths in piece order.
+    """Render every piece to its own indexed WAV, one after another, and return
+    the paths in piece order — the ``render_workers <= 1`` path. (With more
+    workers, ``run_pipeline`` submits pieces of ALL jobs to one shared process
+    pool instead; see the render phase there and PROJECT_ANALYSIS.md §6.4.)
 
-    Each piece is an independent CPU-bound ffmpeg call writing a distinct
-    ``segment_{index}.wav`` (ffmpeg has no GPU audio filters, so spreading the work
-    across cores is the real speed-up). The result is identical to a sequential run:
-    files are keyed by index and re-sorted before returning. Fades are applied only
-    on seams that are not acoustically contiguous (see ``_piece_seam_fades``).
-
-    ``cancel_event`` (a ``threading.Event``), if given and set, raises
-    ``InterruptedError`` between pieces — a job with hundreds of pieces used to
-    only be cancellable between whole JOBS (i.e. clips), so cancelling mid-way
-    through one large clip could take as long as rendering the rest of it.
-    This doesn't kill an already-running ffmpeg subprocess, but it stops
-    starting new ones, which is the practical bulk of the wait. See
-    PROJECT_ANALYSIS.md §3.5.
+    Fades are applied only on seams that are not acoustically contiguous (see
+    ``_piece_seam_fades``). ``cancel_event`` (a ``threading.Event``), if given
+    and set, raises ``InterruptedError`` between pieces — this doesn't kill an
+    already-running ffmpeg subprocess, but it stops starting new ones, which is
+    the practical bulk of the wait. See PROJECT_ANALYSIS.md §3.5.
     """
-    if not pieces:
-        return []
     fades = _piece_seam_fades(pieces)
-    args = [
-        (rs, rd, fac, k, fi, fo)
-        for k, ((rs, rd, fac), (fi, fo)) in enumerate(zip(pieces, fades, strict=True))
-    ]
-    if workers <= 1 or len(pieces) == 1:
-        results_seq: list[Path] = []
-        for rs, rd, fac, k, fi, fo in args:
-            if cancel_event is not None and cancel_event.is_set():
-                raise InterruptedError("Cancelled by user")
-            results_seq.append(
-                render_piece(
-                    rec_path,
-                    tmp_dir,
-                    rs,
-                    rd,
-                    fac,
-                    k,
-                    fade_ms,
-                    fade_in=fi,
-                    fade_out=fo,
-                    sample_rate=sample_rate,
-                    channels=channels,
-                    codec=codec,
-                    stretch_method=stretch_method,
-                )
-            )
-        return results_seq
-    results: dict[int, Path] = {}
-    with ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context()) as pool:
-        futures = {
-            pool.submit(
-                render_piece,
+    results: list[Path] = []
+    for k, ((rs, rd, fac), (fi, fo)) in enumerate(zip(pieces, fades, strict=True)):
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("Cancelled by user")
+        results.append(
+            render_piece(
                 rec_path,
                 tmp_dir,
                 rs,
@@ -641,13 +621,70 @@ def render_pieces(
                 channels=channels,
                 codec=codec,
                 stretch_method=stretch_method,
-            ): k
-            for rs, rd, fac, k, fi, fo in args
-        }
-        for fut in futures:
-            k = futures[fut]
-            results[k] = fut.result()  # re-raises any worker exception here
-    return [results[k] for k in range(len(pieces))]
+            )
+        )
+    return results
+
+
+def _submit_piece_jobs(
+    pool: ProcessPoolExecutor,
+    pieces: list[tuple[float, float, float]],
+    rec_path: Path,
+    tmp_dir: Path,
+    fade_ms: int,
+    sample_rate: int,
+    channels: int,
+    codec: str,
+    stretch_method: str,
+) -> list[Any]:
+    """Submit one ``render_piece`` task per piece to the shared pool and return
+    the futures in piece order. ``render_piece`` lives in ``timestretch`` (a
+    module with only stdlib imports), so non-fork workers unpickling the task
+    import that light module — not this one and not the ML stack."""
+    fades = _piece_seam_fades(pieces)
+    return [
+        pool.submit(
+            render_piece,
+            rec_path,
+            tmp_dir,
+            rs,
+            rd,
+            fac,
+            k,
+            fade_ms,
+            fade_in=fi,
+            fade_out=fo,
+            sample_rate=sample_rate,
+            channels=channels,
+            codec=codec,
+            stretch_method=stretch_method,
+        )
+        for k, ((rs, rd, fac), (fi, fo)) in enumerate(zip(pieces, fades, strict=True))
+    ]
+
+
+def _collect_piece_futures(
+    futures: list[Any], cancel_event: Any = None, poll_s: float = 0.5
+) -> list[Path]:
+    """Gather rendered piece paths from ``futures`` in submit (= piece) order.
+
+    Waits with a short timeout so ``cancel_event`` is honoured mid-job even
+    while pieces are rendering in pool workers — the old per-job pool only
+    checked cancellation on the sequential path, so cancelling during a big
+    multi-core render job silently waited for the whole job to finish. A
+    worker exception re-raises here, on the piece that failed.
+    """
+    results: list[Path] = []
+    for fut in futures:
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Cancelled by user")
+            try:
+                results.append(fut.result(timeout=poll_s))
+                break
+            except FutureTimeoutError:
+                continue
+    return results
 
 
 def _timeline_end(clips: list[MediaClip]) -> float:
@@ -708,9 +745,11 @@ def run_pipeline(
     """Run the full sync pipeline.
 
     ``cancel_event`` (a ``threading.Event``), if given, is checked between
-    render pieces within a job (see ``render_pieces``) in addition to the
+    render pieces within a job — on the sequential path between pieces (see
+    ``_render_pieces_sequential``) and on the pooled path while waiting for
+    each piece future (see ``_collect_piece_futures``) — in addition to the
     existing between-job/stage cancellation that ``progress_callback``
-    raising ``InterruptedError`` already provides — a job with hundreds of
+    raising ``InterruptedError`` already provides. A job with hundreds of
     pieces was previously only cancellable once the WHOLE job finished. See
     PROJECT_ANALYSIS.md §3.5.
     """
@@ -731,6 +770,7 @@ def run_pipeline(
 
     engine: WhisperEngine | None = None
     cleanup_paths: list[Path] = []
+    job_scratch_dirs: list[Path] = []
     warnings: list[str] = []
 
     try:
@@ -1161,51 +1201,97 @@ def run_pipeline(
         fade_ms = config.crossfade_ms if config.crossfade_enabled else 0
         workers = resolve_workers(config.render_workers)
         n_jobs = max(len(render_jobs), 1)
+
+        # Phase 1 — Boundary Flex + a scratch dir per job. Flex must finish
+        # before a job's pieces can render (it rewrites their start times);
+        # it's in-memory FFT work, thread-parallel internally. Scratch dirs
+        # live on the OUTPUT volume (next to the result — /tmp may be small or
+        # full) and persist until each job is assembled in phase 2; any
+        # leftovers are force-cleaned in the outer `finally`.
+        flex_frac = 0.3 if config.boundary_flex else 0.0
+        prepared: list[tuple[Any, list[tuple[float, float, float]], Path]] = []
         for j, job in enumerate(render_jobs):
-            clip_idx = job.clip_idx
-            audio_status[clip_idx] = "working"
-            _notify(
-                "processing",
-                j / n_jobs,
-                f"Rendering synced audio {j + 1}/{n_jobs}",
-                clips=_timeline_snapshot(),
-            )
-            # Keep scratch segments on the OUTPUT volume (next to the result), not
-            # the system /tmp — /tmp may be small or on a full disk.
-            with tempfile.TemporaryDirectory(prefix="whispersync_seg_", dir=audio_synced_dir) as td:
-                tdp = Path(td)
-                pieces = job.pieces
-                # Boundary Flex: acoustically nudge each piece's recorder start so
-                # speech lands under the picture to sub-frame accuracy.
-                if config.boundary_flex and job.cam_audio is not None:
-                    pieces = refine_piece_boundaries(
-                        pieces,
-                        job.lead,
-                        job.cam_audio,
-                        job.rec_path,
-                        job.duration,
-                        job.rec_duration,
-                        config,
-                        tmp_dir=tdp,
-                        workers=workers,
-                    )
-                # Each piece is an independent ffmpeg cut/stretch; render them across
-                # the CPU pool (ffmpeg has no GPU audio filters). Order is preserved.
-                # channels/codec match the source recorder — no forced mono/16-bit
-                # downgrade (PROJECT_ANALYSIS.md §2.0); fades apply only on seams
-                # that Boundary Flex actually made discontinuous.
-                seg_paths = render_pieces(
-                    pieces,
-                    job.rec_path,
-                    tdp,
-                    fade_ms,
-                    workers,
-                    sample_rate=out_sr,
-                    channels=job.channels,
-                    codec=job.codec,
-                    stretch_method=config.stretch_method,
-                    cancel_event=cancel_event,
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Cancelled by user")
+            tdp = Path(tempfile.mkdtemp(prefix="whispersync_seg_", dir=audio_synced_dir))
+            job_scratch_dirs.append(tdp)
+            pieces = job.pieces
+            # Boundary Flex: acoustically nudge each piece's recorder start so
+            # speech lands under the picture to sub-frame accuracy.
+            if config.boundary_flex and job.cam_audio is not None:
+                _notify(
+                    "processing",
+                    flex_frac * j / n_jobs,
+                    f"Boundary Flex {j + 1}/{n_jobs}",
                 )
+                pieces = refine_piece_boundaries(
+                    pieces,
+                    job.lead,
+                    job.cam_audio,
+                    job.rec_path,
+                    job.duration,
+                    job.rec_duration,
+                    config,
+                    tmp_dir=tdp,
+                    workers=workers,
+                )
+            prepared.append((job, pieces, tdp))
+
+        # Phase 2 — render the pieces of EVERY job through ONE shared process
+        # pool, then assemble jobs in order as their pieces complete (ffmpeg
+        # has no GPU audio filters — cores are the speed-up). One pool for the
+        # whole run instead of one per job (PROJECT_ANALYSIS.md §6.4): with
+        # per-job pools, the single-threaded assembly of job N stalled the
+        # piece rendering of job N+1, idling every core at each job boundary;
+        # here assembly overlaps the next jobs' rendering, and the (non-fork,
+        # see _pool_context) worker startup cost is paid once. Piece WAVs wait
+        # on disk until their job assembles — the high-water mark is bounded
+        # by the rendered voice itself, the same order of size as the final
+        # outputs. channels/codec match the source recorder — no forced
+        # mono/16-bit downgrade (PROJECT_ANALYSIS.md §2.0); fades apply only
+        # on seams that Boundary Flex actually made discontinuous.
+        pool: ProcessPoolExecutor | None = None
+        job_futures: list[list[Any]] = []
+        try:
+            if workers > 1 and prepared:
+                pool = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context())
+                for job, pieces, tdp in prepared:
+                    job_futures.append(
+                        _submit_piece_jobs(
+                            pool,
+                            pieces,
+                            job.rec_path,
+                            tdp,
+                            fade_ms,
+                            out_sr,
+                            job.channels,
+                            job.codec,
+                            config.stretch_method,
+                        )
+                    )
+            for j, (job, pieces, tdp) in enumerate(prepared):
+                clip_idx = job.clip_idx
+                audio_status[clip_idx] = "working"
+                _notify(
+                    "processing",
+                    flex_frac + (1.0 - flex_frac) * j / n_jobs,
+                    f"Rendering synced audio {j + 1}/{n_jobs}",
+                    clips=_timeline_snapshot(),
+                )
+                if pool is None:
+                    seg_paths = _render_pieces_sequential(
+                        pieces,
+                        job.rec_path,
+                        tdp,
+                        fade_ms,
+                        sample_rate=out_sr,
+                        channels=job.channels,
+                        codec=job.codec,
+                        stretch_method=config.stretch_method,
+                        cancel_event=cancel_event,
+                    )
+                else:
+                    seg_paths = _collect_piece_futures(job_futures[j], cancel_event)
                 # Name the output after the clip (e.g. "DJI_0832_voice.wav") so the
                 # media file matches its timeline clip; fall back to an index.
                 voice_name = audio_clips[clip_idx].display_name or f"synced_{clip_idx:03d}"
@@ -1224,15 +1310,25 @@ def run_pipeline(
                     duck_db=config.pause_duck_db,
                     duck_fade_ms=config.pause_duck_fade_ms,
                 )
-            audio_clips[clip_idx].path = out
-            audio_clips[clip_idx].in_point = 0.0
-            audio_status[clip_idx] = "done"
-            _notify(
-                "processing",
-                (j + 1) / n_jobs,
-                f"Rendered {j + 1}/{n_jobs}",
-                clips=_timeline_snapshot(),
-            )
+                shutil.rmtree(tdp, ignore_errors=True)
+                audio_clips[clip_idx].path = out
+                audio_clips[clip_idx].in_point = 0.0
+                audio_status[clip_idx] = "done"
+                _notify(
+                    "processing",
+                    flex_frac + (1.0 - flex_frac) * (j + 1) / n_jobs,
+                    f"Rendered {j + 1}/{n_jobs}",
+                    clips=_timeline_snapshot(),
+                )
+        except BaseException:
+            # Don't linger on cancellation/failure: drop queued pieces and let
+            # already-running ffmpeg workers die with the executor.
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            if pool is not None:
+                pool.shutdown(wait=True)
 
         # --- extract voice-free camera ambience onto its own lane (optional) ---
         # Strip the camera's own voice (which would double/echo the clean synced
@@ -1394,3 +1490,5 @@ def run_pipeline(
         for p in cleanup_paths:
             with contextlib.suppress(OSError):
                 os.unlink(p)
+        for d in job_scratch_dirs:
+            shutil.rmtree(d, ignore_errors=True)

@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,31 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     return "out of memory" in msg and any(k in msg for k in ("cuda", "cudnn", "cublas", "gpu"))
 
 
+def _prune_cache(cache_dir: Path, max_age_days: float) -> int:
+    """Delete cached transcripts older than ``max_age_days`` (by mtime).
+
+    Called once per engine start when ``config.cache_max_age_days > 0`` —
+    transcripts are cheap to store but a machine churning through many
+    one-off projects can cap growth this way. Returns the number of entries
+    removed; any filesystem error on an individual entry is skipped (a
+    half-pruned cache is still a valid cache). See PROJECT_ANALYSIS.md §6.6.
+    """
+    if not cache_dir.is_dir():
+        return 0
+    cutoff = time.time() - max_age_days * 86400.0
+    removed = 0
+    for entry in cache_dir.glob("*.json"):
+        try:
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        logger.info("Pruned %d cached transcript(s) older than %g day(s)", removed, max_age_days)
+    return removed
+
+
 class WhisperEngine:
     def __init__(
         self,
@@ -107,6 +133,8 @@ class WhisperEngine:
         # "loading model..." status instead of the UI looking frozen. See
         # PROJECT_ANALYSIS.md §Stage 7.5.
         self._on_model_loading = on_model_loading
+        if config.use_cache and config.cache_max_age_days > 0:
+            _prune_cache(config.resolved_cache_dir, config.cache_max_age_days)
 
     @property
     def device(self) -> str:

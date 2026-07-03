@@ -271,6 +271,7 @@ silently doing nothing, and a missing `--config` path is a hard error. Example:
     "fcpxml_version": "1.9",
     "default_strategy": 3,
     "use_cache": true,
+    "cache_max_age_days": 0,
     "save_transcripts": true,
     "timebase_source": "camera",
     "recorder_mode": "best",
