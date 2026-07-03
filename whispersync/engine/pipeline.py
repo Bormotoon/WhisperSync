@@ -808,13 +808,10 @@ def run_pipeline(
         _notify("scanning", 1.0, "Preliminary layout", clips=_video_snapshot())
 
         # --- transcribe every recorder once ---
-        def _on_model_loading() -> None:
-            _notify(
-                "transcribing_recorder",
-                0.0,
-                f"Loading Whisper model '{config.model}' "
-                "(first run may download it from HuggingFace)...",
-            )
+        # The engine checks the disk first and reports which slow thing is
+        # happening: "found on disk — loading" vs "not found — downloading".
+        def _on_model_loading(message: str) -> None:
+            _notify("transcribing_recorder", 0.0, message)
 
         engine = WhisperEngine(config, on_model_loading=_on_model_loading)
         transcripts_dir = output_path.parent / "transcripts"

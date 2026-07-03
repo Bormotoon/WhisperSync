@@ -93,6 +93,27 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     return "out of memory" in msg and any(k in msg for k in ("cuda", "cudnn", "cublas", "gpu"))
 
 
+def _local_model_path(model: str) -> str | None:
+    """The path the model can be loaded from WITHOUT touching the network:
+    the model string itself when it's already a local CTranslate2 directory,
+    else the complete Hugging Face cache snapshot, else ``None`` (a download
+    is genuinely needed).
+
+    Loading from the returned path skips huggingface_hub entirely — without
+    this, every single start re-checked the model revision online and printed
+    "Fetching 5 files" progress bars, which looked exactly like the (long
+    finished) 3 GB download happening all over again.
+    """
+    if Path(model).is_dir():
+        return model
+    try:
+        from faster_whisper.utils import download_model
+
+        return str(download_model(model, local_files_only=True))
+    except Exception:  # any failure means "not available locally"
+        return None
+
+
 def _prune_cache(cache_dir: Path, max_age_days: float) -> int:
     """Delete cached transcripts older than ``max_age_days`` (by mtime).
 
@@ -122,16 +143,21 @@ class WhisperEngine:
     def __init__(
         self,
         config: WhisperSyncConfig,
-        on_model_loading: Callable[[], None] | None = None,
+        on_model_loading: Callable[[str], None] | None = None,
     ) -> None:
         self.config = config
         self._model: Any = None
         self._device: str = resolve_device(config.device)
         self._compute_type: str = select_compute_type(self._device, config.compute_type)
-        # Fired once, right before the (potentially slow, first-run-downloads-
-        # from-HuggingFace) model load actually happens — lets a caller show a
-        # "loading model..." status instead of the UI looking frozen. See
-        # PROJECT_ANALYSIS.md §Stage 7.5.
+        # What WhisperModel actually loads: the local snapshot/dir path when
+        # the model is already on disk (fully offline, no hub round-trips),
+        # or the model NAME when a real download is needed. Resolved in
+        # _ensure_model right before the first load.
+        self._model_source: str = config.model
+        # Fired once, right before the (potentially slow) model load actually
+        # happens, with a message saying WHICH slow thing is going on —
+        # loading from the local cache vs. a genuine first-run download from
+        # Hugging Face. See PROJECT_ANALYSIS.md §Stage 7.5.
         self._on_model_loading = on_model_loading
         if config.use_cache and config.cache_max_age_days > 0:
             _prune_cache(config.resolved_cache_dir, config.cache_max_age_days)
@@ -148,12 +174,13 @@ class WhisperEngine:
         from faster_whisper import WhisperModel
 
         logger.info(
-            "Loading whisper model=%s device=%s compute_type=%s",
+            "Loading whisper model=%s (source=%s) device=%s compute_type=%s",
             self.config.model,
+            self._model_source,
             device,
             compute_type,
         )
-        return WhisperModel(self.config.model, device=device, compute_type=compute_type)
+        return WhisperModel(self._model_source, device=device, compute_type=compute_type)
 
     def _cleanup_cuda(self) -> None:
         gc.collect()
@@ -164,8 +191,24 @@ class WhisperEngine:
     def _ensure_model(self) -> None:
         if self._model is not None:
             return
+        # Check the disk FIRST, then say which slow thing is about to happen:
+        # a cached model loads via its local path (no network, no misleading
+        # "Fetching N files" bars); a missing one honestly announces the
+        # one-time download before it starts.
+        local_path = _local_model_path(self.config.model)
+        if local_path is not None:
+            self._model_source = local_path
         if self._on_model_loading is not None:
-            self._on_model_loading()
+            if local_path is not None:
+                self._on_model_loading(
+                    f"Whisper model '{self.config.model}' found on disk — " "loading into memory..."
+                )
+            else:
+                self._on_model_loading(
+                    f"Whisper model '{self.config.model}' not found locally — "
+                    "downloading from Hugging Face (one-time; large models are "
+                    "several GB, this can take a while)..."
+                )
         try:
             self._model = self._load(self._device, self._compute_type)
             return

@@ -203,7 +203,7 @@ python main.py
 - **Transcription Settings…** opens a dialog with model / language / device / compute type / initial prompt / transcribe mode.
 - **SYNC** starts the run; the timeline, progress bar, and log update live; **Cancel** takes effect mid-clip.
 - After a successful run: **Open Output Folder** and **Re-run with Selected Strategy** (transcripts are cached — a strategy change skips straight to alignment/render).
-- During the first model load (which may download weights from Hugging Face) the status line says so explicitly instead of looking frozen.
+- The status line tells you exactly what the model stage is doing: a model already on disk reports "found on disk — loading into memory", and only a genuinely missing one reports a (one-time) Hugging Face download. A cached model is loaded straight from its local path — no network round-trips on start.
 
 ### CLI
 

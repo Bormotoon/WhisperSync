@@ -2,6 +2,22 @@
 
 All notable changes to WhisperSync will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **The model no longer *appears* to re-download on every start.** The
+  engine now checks the disk first: a model already present (a local
+  CTranslate2 directory or a complete Hugging Face cache snapshot) is
+  loaded directly from its local path — fully offline, with a status
+  message saying "found on disk — loading into memory". Previously the
+  model NAME was passed to faster-whisper every time, which re-checked
+  the model revision online on each start and printed "Fetching 5 files"
+  progress bars over an already-complete cache — indistinguishable from
+  the (long finished) multi-GB download happening again. Only a genuinely
+  missing model now reports (and performs) the one-time download. Bonus:
+  start-up works with no network connection at all.
+
 ## [0.1.0] — 2026-07-03
 
 First public release.

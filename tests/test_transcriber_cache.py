@@ -47,20 +47,79 @@ def test_cache_key_changes_with_decoding_params(tmp_path: Path) -> None:
 def test_on_model_loading_fires_once_before_first_load() -> None:
     calls: list[str] = []
     cfg = WhisperSyncConfig()
-    engine = WhisperEngine(cfg, on_model_loading=lambda: calls.append("loading"))
+    engine = WhisperEngine(cfg, on_model_loading=calls.append)
 
-    with patch.object(WhisperEngine, "_load", return_value=object()):
+    with (
+        patch.object(WhisperEngine, "_load", return_value=object()),
+        patch("whispersync.engine.transcriber._local_model_path", return_value=None),
+    ):
         engine._ensure_model()
         engine._ensure_model()  # already loaded -> must not fire again
 
-    assert calls == ["loading"]
+    assert len(calls) == 1
+
+
+def test_on_model_loading_reports_cached_model_and_uses_local_path() -> None:
+    calls: list[str] = []
+    cfg = WhisperSyncConfig()
+    engine = WhisperEngine(cfg, on_model_loading=calls.append)
+
+    with (
+        patch.object(WhisperEngine, "_load", return_value=object()),
+        patch(
+            "whispersync.engine.transcriber._local_model_path",
+            return_value="/fake/hub/snapshots/abc",
+        ),
+    ):
+        engine._ensure_model()
+
+    assert len(calls) == 1
+    assert "found on disk" in calls[0]
+    assert "download" not in calls[0].lower()
+    # The actual load must go through the LOCAL path (fully offline), not the
+    # model name (which would re-check the hub online on every start).
+    assert engine._model_source == "/fake/hub/snapshots/abc"
+
+
+def test_on_model_loading_reports_download_when_not_cached() -> None:
+    calls: list[str] = []
+    cfg = WhisperSyncConfig()
+    engine = WhisperEngine(cfg, on_model_loading=calls.append)
+
+    with (
+        patch.object(WhisperEngine, "_load", return_value=object()),
+        patch("whispersync.engine.transcriber._local_model_path", return_value=None),
+    ):
+        engine._ensure_model()
+
+    assert len(calls) == 1
+    assert "downloading" in calls[0].lower()
+    assert engine._model_source == cfg.model  # name -> faster-whisper downloads
 
 
 def test_on_model_loading_not_required() -> None:
     cfg = WhisperSyncConfig()
     engine = WhisperEngine(cfg)  # no callback passed
-    with patch.object(WhisperEngine, "_load", return_value=object()):
+    with (
+        patch.object(WhisperEngine, "_load", return_value=object()),
+        patch("whispersync.engine.transcriber._local_model_path", return_value=None),
+    ):
         engine._ensure_model()  # must not raise
+
+
+def test_local_model_path_accepts_ct2_directory(tmp_path: Path) -> None:
+    from whispersync.engine.transcriber import _local_model_path
+
+    model_dir = tmp_path / "my-ct2-model"
+    model_dir.mkdir()
+    assert _local_model_path(str(model_dir)) == str(model_dir)
+
+
+def test_local_model_path_none_for_unknown_model() -> None:
+    from whispersync.engine.transcriber import _local_model_path
+
+    # A model that certainly isn't in the local HF cache -> needs a download.
+    assert _local_model_path("definitely-not-a-real-model-xyz") is None
 
 
 def test_prune_cache_removes_only_stale_entries(tmp_path: Path) -> None:
