@@ -284,7 +284,7 @@ Exit codes: `0` success · `1` run failure (no anchors, ffmpeg error, …) · `2
 |----------|------|-------------|
 | **1** | Global Linear | Linear clock drift (the most common case). One tempo-conform factor for the entire file. Fastest, minimal processing. |
 | **2** | Local Time-Stretch | Non-linear drift, varying tempo. Each segment between anchors gets its own factor; boundaries snap to inter-word silences. |
-| **3** | Hybrid (Global + Silence) | General purpose, **recommended default**. Each phrase is corrected by the clip's global `K` and placed at its own anchor; the pause between phrases absorbs the residue. Robust to non-linear drift. |
+| **3** | Hybrid (Global + Silence) | General purpose, **recommended default**. Sentence-wise: the recorder is cut ONLY in the real pauses between sentences (a pause ≥ `phrase_gap_threshold` ends a sentence), each sentence is conformed as one piece at the smoothed local drift rate (a transparent resample — anchor jitter never reaches the speech), and the pause pieces absorb all placement residue (stretching room tone is inaudible). Robust to non-linear drift, with no cut ever landing inside speech. |
 
 ```
 Strategy 1        Video:  |========================>
@@ -299,7 +299,7 @@ Strategy 3        Video:  |== phrase ==| pause |== phrase ==| pause |== phrase =
 
 > **About pitch.** Real clock drift is a fraction of a percent, and WhisperSync conforms such pieces with a transparent resample instead of time-stretch — pitch shifts by the same tiny fraction (a few cents, inaudible on speech) with none of WSOLA's phase artifacts. `atempo` engages only when a piece's actual correction exceeds the threshold (`stretch_method` / `RESAMPLE_CONFORM_MAX_DEVIATION`).
 
-> **Mid-word stutter.** In the piecewise strategies (2, 3), piece boundaries snap to the nearest inter-word silence in the recorder (seam-snap-to-silence) instead of cutting exactly on an anchor timecode — this removes the characteristic mid-word stutter without affecting sync accuracy.
+> **Mid-word stutter.** Strategy 3 cannot cut inside speech at all — its boundaries are DEFINED by the inter-sentence pauses. In strategy 2, piece boundaries snap to the nearest inter-word silence (seam-snap-to-silence, moving both the recorder and camera side of the breakpoint so tempo factors stay stable). Boundary Flex moves boundaries without ever repeating or skipping recorder content, so its lip-sync nudges can't create micro-repeats.
 
 > **Auto-strategy.** After every run the measured drift character is compared against the strategy you used; if a different one would fit better, a warning tells you which and why. Re-running is cheap — transcripts are cached.
 

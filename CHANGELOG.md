@@ -4,6 +4,42 @@ All notable changes to WhisperSync will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — sentence-wise Hybrid rendering (stutter/micro-repeat elimination)
+
+A real 8-clip run on strategy 3 still produced stutters and micro-repeats.
+A code audit found three independent artifact generators in the piecewise
+render path, and industry research (PluralEyes: one constant speed conform per
+file; Revoice Pro / academic clock-drift work: continuous warp, never
+chunk-cut speech) confirmed the design direction:
+
+- **Strategy 3 is now sentence-wise.** The recorder is segmented into
+  sentences by its own transcript (a pause ≥ `phrase_gap_threshold` ends a
+  sentence — the same segmentation the SRT export uses); pieces alternate
+  [pause][sentence][pause]…, cutting ONLY inside real pauses. Each
+  sentence piece is conformed at the smoothed local drift rate (a
+  transparent resample — a fraction of a percent), and each pause piece
+  stretches however much is needed to land the next sentence exactly on
+  target: placement error dies in every pause instead of reaching speech.
+  Previously "Hybrid" cut roughly every second at raw anchor positions,
+  turning Whisper's ±50–100 ms word-timing jitter into ±5–10 % tempo
+  wobble between sub-second pieces.
+- **Boundary Flex can no longer create micro-repeats.** It used to slide a
+  piece's whole read window without touching the neighbour — a −80 ms
+  nudge played the same 80 ms of recorder content twice across the seam
+  («подга-га-товил»). A nudge now moves the BOUNDARY: the previous piece's
+  duration absorbs the shift (its factor recomputed so downstream timing
+  is untouched), the nudged piece keeps its own tempo, and content stays
+  contiguous by construction (tested invariant).
+- **Seam-snap moves both sides of a breakpoint** (strategy 2): moving only
+  the recorder side changed one neighbour's input length while both output
+  lengths stayed put, kicking adjacent tempo factors apart by up to ±30 %
+  at every snapped seam — an audible tempo see-saw. The camera side now
+  moves with it, scaled by the clip's rate, so factors stay at the true
+  drift rate.
+- Anchor targets and speech rates now come from a **smoothed drift map**
+  (tricube-weighted local regression over ±30 s of anchors, global-line
+  fallback) instead of raw per-anchor timestamps.
+
 ### Fixed
 
 - **Ambience separation no longer fails on unlucky temp-file names.**

@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from whispersync.config import WhisperSyncConfig
 from whispersync.engine.acoustic import acoustic_coarse_align, refine_piece_boundaries
 from whispersync.engine.export import generate_fcpxml, validate_fcpxml
@@ -324,6 +326,160 @@ def _snap_to_word_gap(rec_time: float, gaps: list[float], max_snap_s: float) -> 
     return best if abs(best - rec_time) <= max_snap_s else rec_time
 
 
+def _sentence_blocks(
+    rec_words: list[tuple[float, float]], min_pause_s: float
+) -> list[tuple[float, float]]:
+    """Group recorder words into sentences: a pause of at least ``min_pause_s``
+    between consecutive words ends a sentence. Returns ``(start, end)`` spans in
+    recorder time, sorted. This is the acoustic definition of a sentence — a
+    stretch of speech with no safe cut point inside it — which is exactly what
+    the renderer needs (punctuation without an actual pause is not cuttable)."""
+    blocks: list[tuple[float, float]] = []
+    for start, end in sorted(rec_words):
+        if blocks and start - blocks[-1][1] < min_pause_s:
+            blocks[-1] = (blocks[-1][0], max(blocks[-1][1], end))
+        else:
+            blocks.append((start, end))
+    return blocks
+
+
+# Sentence-mode rendering constants (strategy 3). The pad keeps a hair of room
+# tone attached to each sentence so the cut never clips a consonant's attack;
+# it's safe because sentences are separated by at least phrase_gap_threshold
+# (>= 2x the pad). The map window is the span of anchors each smoothed-map
+# evaluation sees — wide enough to average Whisper's ±50-100 ms word-timing
+# jitter down to a few ms, narrow enough to track genuine non-linear drift.
+_SENTENCE_PAD_S = 0.08
+_MAP_WINDOW_S = 30.0
+_PAUSE_FACTOR_MIN = 0.5
+_PAUSE_FACTOR_MAX = 2.0
+_MIN_PIECE_S = 0.02
+
+
+def _smoothed_map_at(
+    am: AlignmentMap, rec_t: float, window_s: float = _MAP_WINDOW_S
+) -> tuple[float, float]:
+    """The smoothed drift map evaluated at recorder time ``rec_t``: returns
+    ``(cam_time, local_rate)``.
+
+    A weighted local linear regression over the anchors within ``±window_s``
+    (tricube weights) — individual anchors carry Whisper's word-timing jitter,
+    but a 30-second neighbourhood averages it down to a few milliseconds while
+    still following genuine non-linear drift. Falls back to the global RANSAC
+    line where the neighbourhood is too thin to fit."""
+    k = am.k or 1.0
+    near = [(a.rec_time, a.cam_time) for a in am.anchors if abs(a.rec_time - rec_t) <= window_s]
+    if len(near) >= 4:
+        rec = np.array([p[0] for p in near])
+        cam = np.array([p[1] for p in near])
+        span = float(rec.max() - rec.min())
+        if span >= 5.0:
+            w = (1.0 - (np.abs(rec - rec_t) / window_s) ** 3) ** 3
+            slope, intercept = np.polyfit(rec, cam, 1, w=np.maximum(w, 1e-6))
+            # A locally insane slope (all anchors bunched + jitter) must never
+            # leak into a speech factor; keep it within a sane drift range.
+            if 0.9 <= slope <= 1.1:
+                return float(intercept + slope * rec_t), float(slope)
+    return am.offset + k * rec_t, k
+
+
+def _sentence_pieces(
+    am: AlignmentMap,
+    rec0: float,
+    rec1: float,
+    rec_words: list[tuple[float, float]],
+    config: WhisperSyncConfig,
+) -> tuple[float, list[tuple[float, float, float]]] | None:
+    """Sentence-wise piece plan (strategy 3): cut ONLY between sentences, warp
+    speech ONLY at the smoothed drift rate, absorb ALL placement residue in the
+    inter-sentence pauses.
+
+    Pieces alternate [pause][sentence][pause][sentence]...[tail], tiling
+    ``[rec0, rec1]`` contiguously (no content gap or overlap anywhere — repeats
+    are impossible by construction):
+
+    - a SENTENCE piece spans one uncuttable stretch of speech (plus a small
+      room-tone pad on each side); its factor is the smoothed local drift rate
+      — a fraction of a percent, rendered as a transparent resample. Anchor
+      jitter never reaches a speech factor.
+    - a PAUSE piece is stationary room tone between sentences; its factor is
+      whatever places the NEXT sentence exactly on its smoothed target
+      (clamped to [0.5, 2.0] — stretching room tone is inaudible where
+      stretching speech is not). Placement error therefore dies in every
+      pause instead of accumulating.
+
+    Returns ``None`` when no sentence overlaps the span (caller falls back to
+    a single global piece).
+    """
+    k = am.k or 1.0
+    blocks = [
+        (max(s, rec0), min(e, rec1))
+        for s, e in _sentence_blocks(rec_words, config.phrase_gap_threshold)
+        if e > rec0 and s < rec1
+    ]
+    blocks = [(s, e) for s, e in blocks if e - s > _MIN_PIECE_S]
+    if not blocks:
+        return None
+
+    # Pad each sentence into the surrounding pause (never past the neighbour).
+    padded: list[tuple[float, float]] = []
+    for i, (s, e) in enumerate(blocks):
+        lo = blocks[i - 1][1] if i > 0 else rec0
+        hi = blocks[i + 1][0] if i + 1 < len(blocks) else rec1
+        padded.append((max(s - _SENTENCE_PAD_S, lo, rec0), min(e + _SENTENCE_PAD_S, hi, rec1)))
+
+    # Smoothed target position + local rate for every sentence start.
+    targets: list[tuple[float, float]] = [_smoothed_map_at(am, s) for s, _e in padded]
+
+    pieces: list[tuple[float, float, float]] = []
+    lead = 0.0
+    local = 0.0  # running output (camera-local) time after `lead`
+
+    # Head room tone before the first sentence: stretch it to put sentence 0 on
+    # target; trim it (cutting silence is free) when even max compression can't
+    # fit, pad with lead silence when there isn't enough of it.
+    head_in = padded[0][0] - rec0
+    head_out = max(targets[0][0], 0.0)
+    head_start = rec0
+    if head_out <= _MIN_PIECE_S:
+        head_in = 0.0
+    elif head_in > _MIN_PIECE_S:
+        used = min(head_in, head_out * _PAUSE_FACTOR_MAX)
+        head_start = padded[0][0] - used
+        factor = max(_PAUSE_FACTOR_MIN, min(_PAUSE_FACTOR_MAX, used / head_out))
+        out = used / factor
+        lead = max(0.0, head_out - out)
+        pieces.append((head_start, used, factor))
+        local = out
+    else:
+        lead = head_out
+
+    for j, (s, e) in enumerate(padded):
+        if j > 0:
+            # Pause piece between sentence j-1 and j: absorb the residue.
+            pause_in = s - padded[j - 1][1]
+            needed = max(targets[j][0] - lead - local, _MIN_PIECE_S)
+            if pause_in > _MIN_PIECE_S:
+                factor = max(_PAUSE_FACTOR_MIN, min(_PAUSE_FACTOR_MAX, pause_in / needed))
+                out = pause_in / factor
+                pieces.append((padded[j - 1][1], pause_in, factor))
+                local += out
+        # Sentence piece: transparent conform at the smoothed local rate only.
+        rate = targets[j][1]
+        in_dur = e - s
+        factor = max(0.5, min(2.0, 1.0 / rate if rate else 1.0))
+        pieces.append((s, in_dur, factor))
+        local += in_dur / factor
+
+    # Tail room tone after the last sentence, at the global rate (the assembly
+    # pads/trims to the exact clip length anyway).
+    tail_in = rec1 - padded[-1][1]
+    if tail_in > _MIN_PIECE_S:
+        pieces.append((padded[-1][1], tail_in, max(0.5, min(2.0, k and 1.0 / k or 1.0))))
+
+    return lead, pieces
+
+
 def clip_pieces(
     am: AlignmentMap,
     clip_duration: float,
@@ -331,6 +487,7 @@ def clip_pieces(
     strategy_id: int,
     config: WhisperSyncConfig,
     rec_word_gaps: list[float] | None = None,
+    rec_words: list[tuple[float, float]] | None = None,
 ) -> tuple[float, list[tuple[float, float, float]]]:
     """Contiguous recorder pieces that tile a camera clip, for a continuous warp.
 
@@ -383,7 +540,16 @@ def clip_pieces(
             return lead, []
         return lead, [(rec0, rec1 - rec0, (rec1 - rec0) / out_dur)]
 
-    # Strategy 3 (Hybrid): fewer seams — thin anchors to roughly one per phrase.
+    # Strategy 3 (Hybrid): sentence-wise rendering — cut ONLY in the real
+    # pauses between sentences, conform speech ONLY at the smoothed drift
+    # rate, absorb all placement residue in the pause pieces. Falls back to
+    # the anchor-thinning path when the recorder's word list isn't available
+    # (older callers/tests).
+    if strategy_id == 3 and rec_words:
+        sentence_plan = _sentence_pieces(am, rec0, rec1, rec_words, config)
+        if sentence_plan is not None:
+            return sentence_plan
+
     if strategy_id == 3:
         spacing = max(config.phrase_gap_threshold, 1.0)
         thinned: list[tuple[float, float]] = []
@@ -394,11 +560,16 @@ def clip_pieces(
 
     # Snap each interior breakpoint's recorder time to the nearest inter-word
     # silence (seam-snap-to-silence), so no piece boundary lands mid-word. The
-    # camera-time side is left as-is (it's still the anchor's real position);
-    # only WHERE in the recorder the cut happens moves, within a small window.
+    # camera-time side moves WITH it (scaled by the clip's global rate): moving
+    # only the recorder side used to change one neighbour's input length while
+    # both output lengths stayed put, kicking the two adjacent tempo factors
+    # apart by up to ±30% — an audible tempo see-saw at every snapped seam.
     if rec_word_gaps:
-        pts = [(_snap_to_word_gap(rt, rec_word_gaps, config.seam_snap_max_s), ct) for rt, ct in pts]
-        pts.sort()
+        snapped: list[tuple[float, float]] = []
+        for rt, ct in pts:
+            nrt = _snap_to_word_gap(rt, rec_word_gaps, config.seam_snap_max_s)
+            snapped.append((nrt, ct + (nrt - rt) * k))
+        pts = sorted(snapped)
 
     # Clip edges use the global line; interior uses matched word times. Keep only
     # strictly-increasing (rec, local) breakpoints so every piece is sane.
@@ -1087,6 +1258,7 @@ def run_pipeline(
                 strategy_id,
                 config,
                 rec_word_gaps=rec_word_gaps[ri],
+                rec_words=[(w.start, w.end) for w in rec_transcripts[ri].words],
             )
             if not pieces:
                 return
@@ -1225,7 +1397,7 @@ def run_pipeline(
                     flex_frac * j / n_jobs,
                     f"Boundary Flex {j + 1}/{n_jobs}",
                 )
-                pieces = refine_piece_boundaries(
+                job.lead, pieces = refine_piece_boundaries(
                     pieces,
                     job.lead,
                     job.cam_audio,

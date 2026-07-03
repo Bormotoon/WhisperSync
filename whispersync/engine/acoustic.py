@@ -240,6 +240,9 @@ def _measure_boundary(
     return 0.0
 
 
+_FLEX_MIN_PIECE_S = 0.05
+
+
 def refine_piece_boundaries(
     pieces: list[Piece],
     lead: float,
@@ -250,17 +253,29 @@ def refine_piece_boundaries(
     config: WhisperSyncConfig,
     tmp_dir: Path | None = None,
     workers: int = 1,
-) -> list[Piece]:
-    """Acoustically nudge each piece's recorder start so its speech lands under the
+) -> tuple[float, list[Piece]]:
+    """Acoustically nudge each piece's onset so its speech lands under the
     picture, independent of Whisper's word timings ("Boundary Flex").
+    Returns ``(lead, pieces)`` — the lead can change when piece 0's onset moves.
 
     Pieces are contiguous in OUTPUT (camera) time, beginning at ``lead``: piece i's
     local start is ``lead + sum(out_dur[<i])`` where ``out_dur = rec_dur / factor``.
     For each piece we cross-correlate a short camera window at that local time against
     the recorder window at the piece's current ``rec_start``; if the peak is sharp and
-    the measured residual exceeds the deadband, we shift ``rec_start`` by it (clamped).
-    The piece's duration/factor are left unchanged, so the exact-length contract and
-    the overall warp are preserved — only WHERE in the recorder we cut from moves.
+    the measured residual exceeds the deadband, the BOUNDARY between this piece and
+    its predecessor moves by it (clamped).
+
+    Moving the boundary — not just this piece's start — is what keeps the plan free
+    of content gaps and overlaps: the previous piece's duration absorbs the shift
+    (its factor is recomputed so its OUTPUT length grows/shrinks by exactly the
+    output this piece loses/gains), the shifted piece keeps its own tempo factor, and
+    every later piece's output position is untouched. The old behaviour slid the
+    whole piece window without touching the neighbour, so a −80 ms nudge made the
+    last 80 ms of piece N and the first 80 ms of piece N+1 the SAME recorder
+    content played twice — the mid-word micro-repeat («подга-га-товил») users
+    heard with Boundary Flex enabled. With sentence-wise plans the boundary sits
+    in room tone and the neighbour is a pause piece, so the absorbed shift is
+    inaudible by construction.
 
     Both tracks are decoded to mono 16 kHz numpy arrays exactly once (regardless
     of piece count), and every boundary window is a slice of those arrays — no
@@ -272,7 +287,7 @@ def refine_piece_boundaries(
     unused now that no scratch files are written.
     """
     if not pieces:
-        return pieces
+        return lead, pieces
 
     win = config.flex_window_s
 
@@ -292,7 +307,7 @@ def refine_piece_boundaries(
         local += out_dur
 
     if not jobs:
-        return pieces
+        return lead, pieces
 
     # Decode both full tracks to mono 16k once; every boundary below just
     # slices these arrays.
@@ -320,15 +335,50 @@ def refine_piece_boundaries(
             for fut, idx in futs.items():
                 corrections[idx] = fut.result()
 
-    # Apply corrections, clamping each shifted start within the recorder bounds.
-    refined: list[Piece] = []
+    # Apply each correction as a BOUNDARY move (content stays contiguous):
+    #   piece i:   onset += δ, duration −= δ, factor kept → its speech rate is
+    #              untouched, its output shortens/lengthens by δ/factor;
+    #   piece i−1: duration += δ (covers the ceded/vacated recorder content),
+    #              factor recomputed so its output length changes by exactly
+    #              +δ/factor_i — every later piece's output position is
+    #              preserved. For piece 0 the lead absorbs the output change.
+    refined: list[list[float]] = [list(p) for p in pieces]
+    out_durs = [rec_dur / factor if factor else rec_dur for (_s, rec_dur, factor) in pieces]
+    new_lead = lead
     n_shifted = 0
-    for idx, (rec_start, rec_dur, factor) in enumerate(pieces):
-        corr = corrections.get(idx, 0.0)
-        if corr != 0.0:
-            n_shifted += 1
-        new_start = max(0.0, min(rec_start + corr, rec_duration - rec_dur))
-        refined.append((new_start, rec_dur, factor))
+    for idx in sorted(corrections):
+        delta = corrections[idx]
+        if delta == 0.0:
+            continue
+        start, dur, factor = refined[idx]
+        # Clamps: this piece keeps a sliver of duration; the neighbour (or the
+        # lead) must be able to absorb; the shifted onset stays in the recorder.
+        delta = min(delta, dur - _FLEX_MIN_PIECE_S)
+        delta = max(delta, -start)
+        if idx > 0:
+            delta = max(delta, -(refined[idx - 1][1] - _FLEX_MIN_PIECE_S))
+        else:
+            f = factor or 1.0
+            if new_lead + delta / f < 0.0:
+                delta = -new_lead * f
+        if abs(delta) < 1e-6:
+            continue
+        n_shifted += 1
+        f = factor or 1.0
+        refined[idx] = [start + delta, dur - delta, factor]
+        out_durs[idx] -= delta / f
+        if idx > 0:
+            p_start, p_dur, _p_factor = refined[idx - 1]
+            new_p_dur = p_dur + delta
+            new_p_out = out_durs[idx - 1] + delta / f
+            refined[idx - 1] = [
+                p_start,
+                new_p_dur,
+                max(0.25, min(4.0, new_p_dur / new_p_out)) if new_p_out > 1e-6 else 1.0,
+            ]
+            out_durs[idx - 1] = new_p_out
+        else:
+            new_lead += delta / f
 
-    logger.info("Boundary Flex: nudged %d/%d piece starts", n_shifted, len(pieces))
-    return refined
+    logger.info("Boundary Flex: nudged %d/%d piece onsets", n_shifted, len(pieces))
+    return new_lead, [(s, d, f) for s, d, f in refined]

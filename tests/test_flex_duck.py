@@ -137,7 +137,7 @@ def test_refine_shifts_only_confident_beyond_deadband(monkeypatch) -> None:
 
     monkeypatch.setattr(acoustic, "gcc_phat", fake_gcc)
 
-    refined = acoustic.refine_piece_boundaries(
+    lead, refined = acoustic.refine_piece_boundaries(
         pieces,
         lead=0.0,
         cam_audio_wav=Path("c"),
@@ -146,12 +146,53 @@ def test_refine_shifts_only_confident_beyond_deadband(monkeypatch) -> None:
         rec_duration=600.0,
         config=cfg,
     )
-    # piece 0 start moved by +0.08 (=-lag); 1 and 2 unchanged
+    # piece 0's onset moved by +0.08 (=-lag) with its END fixed; 1 and 2 unchanged
     assert abs(refined[0][0] - 100.08) < 1e-6
+    assert abs(refined[0][1] - 4.92) < 1e-6
     assert abs(refined[1][0] - 105.0) < 1e-6
     assert abs(refined[2][0] - 110.0) < 1e-6
-    # durations/factors preserved
-    assert all(p[1] == 5.0 and p[2] == 1.0 for p in refined)
+    # piece 0's own tempo factor is preserved; the lead absorbs the output change
+    assert refined[0][2] == 1.0
+    assert abs(lead - 0.08) < 1e-6
+    # CONTIGUITY INVARIANT: no recorder content is repeated or skipped anywhere
+    for (s0, d0, _f0), (s1, _d1, _f1) in zip(refined, refined[1:], strict=False):
+        assert abs((s0 + d0) - s1) < 1e-9
+
+
+def test_refine_interior_shift_keeps_content_contiguous(monkeypatch) -> None:
+    # THE micro-repeat regression: shifting an interior piece's onset must move
+    # the BOUNDARY (neighbour's end follows), never slide a window over content
+    # the previous piece already played.
+    cfg = WhisperSyncConfig(boundary_flex=True, flex_min_sharpness=80.0, flex_max_shift_s=0.15)
+    pieces = [(100.0, 5.0, 1.0), (105.0, 5.0, 1.0), (110.0, 5.0, 1.0)]
+    fake_track = np.zeros(700 * 16000)
+    monkeypatch.setattr(acoustic, "load_mono16k_track", lambda p: fake_track)
+
+    calls = {"i": 0}
+
+    def fake_gcc(cam, rec, sr, max_lag, eps):
+        i = calls["i"]
+        calls["i"] += 1
+        # only the middle boundary gets a confident -80 ms correction
+        return [(0.0, 10.0), (0.08, 200.0), (0.0, 10.0)][i]
+
+    monkeypatch.setattr(acoustic, "gcc_phat", fake_gcc)
+
+    lead, refined = acoustic.refine_piece_boundaries(
+        pieces, 0.0, Path("c"), Path("r"), 15.0, 600.0, cfg
+    )
+    # piece 1's onset moved 80 ms EARLIER; piece 0's end followed it exactly
+    assert abs(refined[1][0] - 104.92) < 1e-6
+    assert abs((refined[0][0] + refined[0][1]) - refined[1][0]) < 1e-9
+    # piece 1 keeps its own tempo; piece 0's factor absorbed the output change
+    assert refined[1][2] == 1.0
+    assert abs(refined[0][1] - 4.92) < 1e-6
+    # total output length is preserved (later pieces don't move)
+    out = sum(d / f for _s, d, f in refined)
+    assert abs(out - 15.0) < 1e-6
+    assert lead == 0.0
+    for (s0, d0, _f0), (s1, _d1, _f1) in zip(refined, refined[1:], strict=False):
+        assert abs((s0 + d0) - s1) < 1e-9
 
 
 def test_refine_clamps_to_max_shift(monkeypatch) -> None:
@@ -160,6 +201,8 @@ def test_refine_clamps_to_max_shift(monkeypatch) -> None:
     fake_track = np.zeros(700 * 16000)
     monkeypatch.setattr(acoustic, "load_mono16k_track", lambda p: fake_track)
     monkeypatch.setattr(acoustic, "gcc_phat", lambda *a, **k: (-1.0, 300.0))  # huge lag
-    refined = acoustic.refine_piece_boundaries(pieces, 0.0, Path("c"), Path("r"), 15.0, 600.0, cfg)
+    _lead, refined = acoustic.refine_piece_boundaries(
+        pieces, 0.0, Path("c"), Path("r"), 15.0, 600.0, cfg
+    )
     # clamped to +0.15, not +1.0
     assert abs(refined[0][0] - 100.15) < 1e-6

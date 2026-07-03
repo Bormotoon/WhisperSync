@@ -22,9 +22,9 @@ STRATEGIES: dict[int, tuple[str, str]] = {
     ),
     3: (
         "Hybrid (Global + Silence)",
-        "Each phrase is tempo-corrected by the clip's global K, then placed at "
-        "its anchor position with silence absorbing the rest. Robust + near "
-        "pitch-perfect. Recommended default.",
+        "Sentence-wise: cuts only in the real pauses between sentences, "
+        "conforms speech at the smoothed drift rate (transparent), and lets "
+        "the pauses absorb all placement residue. Recommended default.",
     ),
 }
 

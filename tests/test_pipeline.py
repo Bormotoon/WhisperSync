@@ -309,3 +309,155 @@ def test_camera_av_offset_resolution_defaults_and_overrides() -> None:
     )
     assert cfg.camera_av_offset_ms_by_camera.get("camA", cfg.camera_av_offset_ms) == 10.0
     assert cfg.camera_av_offset_ms_by_camera.get("camB", cfg.camera_av_offset_ms) == -5.0
+
+
+# --- sentence-wise strategy 3 -------------------------------------------------
+
+
+def _jittered_alignment(k: float, jitter: list[float], step: float = 2.0) -> AlignmentMap:
+    """Anchors on the line cam = k*rec with per-anchor cam-time jitter."""
+    anchors = [
+        Anchor(
+            cam_time=k * (i * step) + jitter[i % len(jitter)],
+            rec_time=i * step,
+            token=f"w{i}",
+            confidence=0.9,
+        )
+        for i in range(1, 40)
+    ]
+    return AlignmentMap(anchors=anchors, offset=0.0, k=k, residual_ms=30.0)
+
+
+def _speech_words(sentences: list[tuple[float, float]], word_len: float = 0.3):
+    """Dense word spans filling each sentence block (gap < pause inside)."""
+    words: list[tuple[float, float]] = []
+    for s, e in sentences:
+        t = s
+        while t < e - 1e-9:
+            words.append((t, min(t + word_len, e)))
+            t += word_len + 0.1  # 0.1s intra-sentence gaps (below the pause gate)
+    return words
+
+
+def test_sentence_blocks_groups_by_pause() -> None:
+    from whispersync.engine.pipeline import _sentence_blocks
+
+    words = [(0.0, 0.3), (0.5, 0.9), (2.0, 2.4), (2.5, 3.0)]  # 1.1s pause after 0.9
+    blocks = _sentence_blocks(words, min_pause_s=0.6)
+    assert blocks == [(0.0, 0.9), (2.0, 3.0)]
+
+
+def test_sentence_mode_cuts_only_in_pauses() -> None:
+    # Two sentences [5..15] and [17..27] (2s pause), anchors every 2s with
+    # ±80ms jitter. Every interior piece boundary must land OUTSIDE speech.
+    sentences = [(5.0, 15.0), (17.0, 27.0)]
+    words = _speech_words(sentences)
+    am = _jittered_alignment(1.0, [0.08, -0.06, 0.05, -0.08])
+    cfg = WhisperSyncConfig()
+
+    lead, pieces = clip_pieces(
+        am, clip_duration=40.0, rec_duration=60.0, strategy_id=3, config=cfg, rec_words=words
+    )
+    assert pieces, "sentence mode must produce pieces"
+    interior = [s for s, _d, _f in pieces[1:]]  # every piece start except the first
+    for b in interior:
+        for ws, we in words:
+            assert not (ws + 1e-6 < b < we - 1e-6), f"boundary {b} lands inside word {ws}-{we}"
+
+
+def test_sentence_mode_speech_factors_are_smooth_despite_jitter() -> None:
+    # Anchor jitter of ±80ms used to swing per-piece factors by ±5-10%; with
+    # the smoothed map, SPEECH pieces must stay within a fraction of a percent
+    # of the true rate (K=1.0) — pause pieces may stretch freely.
+    sentences = [(5.0, 15.0), (17.0, 27.0), (29.0, 39.0)]
+    words = _speech_words(sentences)
+    am = _jittered_alignment(1.0, [0.08, -0.06, 0.05, -0.08])
+    cfg = WhisperSyncConfig()
+
+    _lead, pieces = clip_pieces(
+        am, clip_duration=45.0, rec_duration=60.0, strategy_id=3, config=cfg, rec_words=words
+    )
+
+    def is_speech_piece(start: float, dur: float) -> bool:
+        mid = start + dur / 2.0
+        return any(s <= mid <= e for s, e in sentences)
+
+    speech_factors = [f for s, d, f in pieces if is_speech_piece(s, d) and d > 1.0]
+    assert speech_factors, "expected speech pieces"
+    for f in speech_factors:
+        assert abs(f - 1.0) < 0.005, f"speech factor {f} polluted by anchor jitter"
+
+
+def test_sentence_mode_pieces_tile_contiguously() -> None:
+    # No recorder content may be skipped or repeated between pieces.
+    sentences = [(5.0, 15.0), (17.0, 27.0)]
+    words = _speech_words(sentences)
+    am = _jittered_alignment(1.0005, [0.03, -0.03])
+    cfg = WhisperSyncConfig()
+
+    _lead, pieces = clip_pieces(
+        am, clip_duration=40.0, rec_duration=60.0, strategy_id=3, config=cfg, rec_words=words
+    )
+    for (s0, d0, _f0), (s1, _d1, _f1) in zip(pieces, pieces[1:], strict=False):
+        assert abs((s0 + d0) - s1) < 1e-6
+
+
+def test_sentence_mode_places_sentences_on_target() -> None:
+    # True mapping cam = rec + 1.0 (offset 1s, K=1): sentence onsets must land
+    # within a few ms of their true camera positions despite anchor jitter.
+    sentences = [(5.0, 15.0), (17.0, 27.0)]
+    words = _speech_words(sentences)
+    anchors = [
+        Anchor(cam_time=1.0 + i * 2.0 + j, rec_time=i * 2.0, token=f"w{i}", confidence=0.9)
+        for i, j in ((i, [0.05, -0.05][i % 2]) for i in range(1, 20))
+    ]
+    am = AlignmentMap(anchors=anchors, offset=1.0, k=1.0, residual_ms=30.0)
+    cfg = WhisperSyncConfig()
+
+    lead, pieces = clip_pieces(
+        am, clip_duration=40.0, rec_duration=60.0, strategy_id=3, config=cfg, rec_words=words
+    )
+    # walk the plan and find the output position of each sentence onset
+    local = lead
+    positions: dict[float, float] = {}
+    for s, d, f in pieces:
+        positions[round(s, 3)] = local
+        local += d / f
+    for s, _e in sentences:
+        # sentence piece starts at s - pad (0.08); its true cam position is s + 1 - pad
+        key = round(s - 0.08, 3)
+        assert key in positions
+        assert abs(positions[key] - (s + 1.0 - 0.08)) < 0.03
+
+
+def test_sentence_mode_without_words_falls_back_to_thinning() -> None:
+    am = _jittered_alignment(1.0, [0.0])
+    cfg = WhisperSyncConfig()
+    _lead, pieces = clip_pieces(
+        am, clip_duration=40.0, rec_duration=60.0, strategy_id=3, config=cfg
+    )
+    assert pieces  # old path still works when rec_words aren't available
+
+
+def test_strategy2_snap_moves_both_sides_keeping_factors_stable() -> None:
+    # Snapping a boundary 0.3s into a pause used to change one neighbour's
+    # INPUT length while both OUTPUT lengths stayed put — factors jumped to
+    # ~1.3/0.7 around every snapped seam. Moving the camera side along with
+    # the recorder side keeps factors at the true rate.
+    anchors = [
+        Anchor(cam_time=float(t), rec_time=float(t), token=f"w{t}", confidence=0.9)
+        for t in (2.0, 5.0, 8.0)
+    ]
+    am = AlignmentMap(anchors=anchors, offset=0.0, k=1.0, residual_ms=5.0)
+    cfg = WhisperSyncConfig()
+    _lead, pieces = clip_pieces(
+        am,
+        clip_duration=10.0,
+        rec_duration=20.0,
+        strategy_id=2,
+        config=cfg,
+        rec_word_gaps=[5.3],  # snap the middle boundary 0.3s to the right
+    )
+    assert any(abs(s - 5.3) < 1e-9 for s, _d, _f in pieces)  # snap happened
+    for _s, _d, f in pieces:
+        assert abs(f - 1.0) < 0.01, f"factor {f} destabilized by one-sided snap"
