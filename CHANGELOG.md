@@ -2,7 +2,9 @@
 
 All notable changes to WhisperSync will be documented in this file.
 
-## [Unreleased]
+## [0.1.0] — 2026-07-03
+
+First public release.
 
 ### Changed — GitHub publication prep (2026-07-03)
 
