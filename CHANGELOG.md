@@ -4,6 +4,36 @@ All notable changes to WhisperSync will be documented in this file.
 
 ## [Unreleased]
 
+### Added — new features (Stage 7, 2026-07-03)
+
+- **Auto-strategy recommendation**: after a run, the residual/local-drift
+  characteristics of the best alignment are checked against the strategy
+  actually used; if a different strategy would likely fit better, a warning
+  suggests it (transcripts are cached, so re-running is cheap).
+- **Acoustic fallback ("Strategy 0")**: a clip with no usable transcript match
+  against any recorder (music, background noise, near-silence, a language
+  Whisper garbles) now falls back to a coarse GCC-PHAT cross-correlation grid
+  scan across the waveforms to estimate offset/K directly — turning a hard
+  failure into a still-working (if less precise) placement, as long as the
+  same physical audio event reaches both the camera and recorder mic. On by
+  default (`acoustic_fallback`).
+- **Per-camera AV/lip-sync calibration**: `camera_av_offset_ms` /
+  `camera_av_offset_ms_by_camera` (and `--camera-av-offset-ms`) apply a
+  constant correction for a camera's own mic-to-lips delay, which no
+  acoustic method can see on its own.
+- **`--render-master-wav`**: optionally render a single WAV spanning the
+  whole timeline (every synced voice clip, and the ambience track if
+  enabled, mixed at their timeline offsets over a silent bed) next to the
+  FCPXML, for anyone without an NLE.
+- **GUI parity with the CLI**: the Recorder Audio drop zone now accepts
+  multiple files (drag-drop or Browse) with a `best`/`all` recorder-mode
+  picker; a new "Transcription Settings..." dialog exposes
+  model/language/device/compute-type/initial-prompt/transcribe-mode; a
+  "Re-run with Selected Strategy" button appears after a successful run
+  (transcripts are cached, so it skips straight to alignment/render); and
+  the status/log now shows "Loading Whisper model..." during a first-time
+  (possibly HuggingFace-downloading) model load instead of looking frozen.
+
 ### Changed — quality/reliability overhaul (2026-07-02)
 
 A full project audit (`PROJECT_ANALYSIS.md`) found that the rendered voice
