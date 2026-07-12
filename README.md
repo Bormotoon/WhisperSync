@@ -6,8 +6,11 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![Code style](https://img.shields.io/badge/code%20style-black%20%7C%20ruff%20%7C%20mypy-000000)
 [![Donate](https://img.shields.io/badge/%E2%9D%A4-Support%20the%20project-E53935)](https://dalink.to/bormotoon)
+[![педобраз.рф](https://img.shields.io/badge/%D0%BF%D0%B5%D0%B4%D0%BE%D0%B1%D1%80%D0%B0%D0%B7.%D1%80%D1%84-project_page-D64500)](https://xn--80abidn3bem.xn--p1ai/projects/whispersync/)
 
 **English** · [Русский](README.ru.md)
+
+🌐 **Project page:** [педобраз.рф/projects/whispersync](https://xn--80abidn3bem.xn--p1ai/projects/whispersync/)
 
 ---
 
