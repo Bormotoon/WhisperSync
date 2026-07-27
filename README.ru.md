@@ -527,7 +527,7 @@ CI гоняет тот же набор на Python 3.10–3.14 (зависимо
 
 WhisperSync бесплатен для некоммерческого использования и делается в свободное время. Если он экономит вам часы ручной синхронизации — поддержите разработку:
 
-[![Поддержать WhisperSync — угостить автора кофе](docs/images/donate_banner.png)](https://dalink.to/bormotoon)
+[![Поддержать WhisperSync — угостить автора кофе](docs/images/donate_banner_ru.png)](https://dalink.to/bormotoon)
 
 ## Лицензия
 
